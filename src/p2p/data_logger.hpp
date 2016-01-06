@@ -33,7 +33,7 @@
 #include <map>
 #include <fstream>
 #include <memory>
-#include <thread>
+#include <boost/thread/thread.hpp>
 #include <mutex>
 #include <atomic>
 

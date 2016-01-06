@@ -31,7 +31,7 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
-#include <thread>
+#include <boost/thread/thread.hpp>
 #include <iostream>
 
 namespace epee
@@ -44,7 +44,7 @@ namespace epee
       , m_has_read_request(false)
       , m_read_status(state_init)
     {
-      m_reader_thread = std::thread(std::bind(&async_stdin_reader::reader_thread_func, this));
+      m_reader_thread = boost::thread(boost::bind(&async_stdin_reader::reader_thread_func, this));
     }
 
     ~async_stdin_reader()
@@ -205,7 +205,7 @@ namespace epee
     };
 
   private:
-    std::thread m_reader_thread;
+    boost::thread m_reader_thread;
     std::atomic<bool> m_run;
 
     std::string m_line;
