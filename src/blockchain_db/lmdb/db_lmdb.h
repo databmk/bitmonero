@@ -30,6 +30,7 @@
 
 #include "blockchain_db/blockchain_db.h"
 #include "cryptonote_protocol/blobdatatype.h" // for type blobdata
+#include <boost/thread/tss.hpp>
 
 #include <lmdb.h>
 
@@ -75,6 +76,22 @@ struct mdb_txn_safe
   static std::atomic_flag creation_gate;
 };
 
+typedef struct mdb_block_info {
+	uint64_t bi_timestamp;
+	uint64_t bi_coins;
+	size_t bi_size;
+	difficulty_type bi_diff;
+	crypto::hash bi_hash;
+} mdb_block_info;
+
+typedef struct mdb_block_hinfo {
+	uint64_t bh_height;
+	mdb_block_info bh_info;
+} mdb_block_hinfo;
+
+typedef struct mdb_recent_info {
+  boost::thread_specific_ptr<mdb_block_hinfo> m_info;
+} mdb_recent_info;
 
 // If m_batch_active is set, a batch transaction exists beyond this class, such
 // as a batch import with verification enabled, or possibly (later) a batch
@@ -138,6 +155,9 @@ public:
   virtual std::vector<block> get_blocks_range(const uint64_t& h1, const uint64_t& h2) const;
 
   virtual std::vector<crypto::hash> get_hashes_range(const uint64_t& h1, const uint64_t& h2) const;
+
+  virtual void get_block_sizes_range(std::vector<size_t>& sz, const uint64_t& h1, const uint64_t& h2) const;
+  virtual void get_block_timestamps_range(std::vector<uint64_t>& sz, const uint64_t& h1, const uint64_t& h2) const;
 
   virtual crypto::hash top_block_hash() const;
 
@@ -204,6 +224,7 @@ private:
   void check_and_resize_for_batch(uint64_t batch_num_blocks);
   uint64_t get_estimated_batch_size(uint64_t batch_num_blocks) const;
 
+  void get_block_info(const uint64_t height) const;
   virtual void add_block( const block& blk
                 , const size_t& block_size
                 , const difficulty_type& cumulative_difficulty
@@ -275,11 +296,7 @@ private:
 
   MDB_dbi m_blocks;
   MDB_dbi m_block_heights;
-  MDB_dbi m_block_hashes;
-  MDB_dbi m_block_timestamps;
-  MDB_dbi m_block_sizes;
-  MDB_dbi m_block_diffs;
-  MDB_dbi m_block_coins;
+  MDB_dbi m_block_info;
 
   MDB_dbi m_txs;
   MDB_dbi m_tx_unlocks;
@@ -306,6 +323,8 @@ private:
 
   bool m_batch_transactions; // support for batch transactions
   bool m_batch_active; // whether batch transaction is in progress
+
+  mdb_recent_info *m_recent_info;
 
 #if defined(__arm__)
   // force a value so it can compile with 32-bit ARM

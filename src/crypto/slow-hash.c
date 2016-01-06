@@ -761,10 +761,6 @@ void cn_slow_hash(const void *data, size_t length, char *hash)
     size_t i, j;
     uint8_t *p = NULL;
     oaes_ctx *aes_ctx;
-    static void (*const extra_hashes[4])(const void *, size_t, char *) =
-    {
-        hash_extra_blake, hash_extra_groestl, hash_extra_jh, hash_extra_skein
-    };
 
     hash_process(&state.hs, data, length);
     memcpy(text, state.init, INIT_SIZE_BYTE);

@@ -994,10 +994,7 @@ void Blockchain::get_last_n_blocks_sizes(std::vector<size_t>& sz, size_t count) 
 
   // add size of last <count> blocks to vector <sz> (or less, if blockchain size < count)
   size_t start_offset = h - std::min<size_t>(h, count);
-  for(size_t i = start_offset; i < h; i++)
-  {
-    sz.push_back(m_db->get_block_size(i));
-  }
+  m_db->get_block_sizes_range(sz, start_offset, h-1);
 }
 //------------------------------------------------------------------
 uint64_t Blockchain::get_current_cumulative_blocksize_limit() const
@@ -2354,10 +2351,7 @@ bool Blockchain::check_block_timestamp(const block& b) const
 
   // need most recent 60 blocks, get index of first of those
   size_t offset = h - BLOCKCHAIN_TIMESTAMP_CHECK_WINDOW;
-  for(;offset < h; ++offset)
-  {
-    timestamps.push_back(m_db->get_block_timestamp(offset));
-  }
+  m_db->get_block_timestamps_range(timestamps, offset, h-1);
 
   return check_block_timestamp(timestamps, b);
 }
