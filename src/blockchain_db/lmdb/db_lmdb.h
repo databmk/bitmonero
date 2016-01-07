@@ -326,6 +326,18 @@ private:
 
   mdb_recent_info *m_recent_info;
 
+  MDB_cursor *m_cur_output_txs;
+  MDB_cursor *m_cur_tx_outputs;
+  MDB_cursor *m_cur_output_indices;
+  MDB_cursor *m_cur_output_amounts;
+  MDB_cursor *m_cur_output_keys;
+
+  MDB_cursor *m_cur_txs;
+  MDB_cursor *m_cur_tx_heights;
+  MDB_cursor *m_cur_tx_unlocks;
+
+  MDB_cursor *m_cur_spent_keys;
+
 #if defined(__arm__)
   // force a value so it can compile with 32-bit ARM
   constexpr static uint64_t DEFAULT_MAPSIZE = 1LL << 31;
