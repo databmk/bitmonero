@@ -569,7 +569,7 @@ void BlockchainLMDB::add_block(const block& blk, const size_t& block_size, const
 
   MDB_val_copy<uint64_t> key(m_height);
   MDB_val_copy<blobdata> blob(block_to_blob(blk));
-  result = mdb_put(*m_write_txn, m_blocks, &key, &blob, 0);
+  result = mdb_put(*m_write_txn, m_blocks, &key, &blob, MDB_APPEND);
   if (result)
     throw0(DB_ERROR(std::string("Failed to add block blob to db transaction: ").append(mdb_strerror(result)).c_str()));
 
@@ -583,7 +583,7 @@ void BlockchainLMDB::add_block(const block& blk, const size_t& block_size, const
   MDB_val val;
   val.mv_data = (void *)&bi;
   val.mv_size = sizeof(bi);
-  result = mdb_put(*m_write_txn, m_block_info, &key, &val, 0);
+  result = mdb_put(*m_write_txn, m_block_info, &key, &val, MDB_APPEND);
   if (result)
     throw0(DB_ERROR(std::string("Failed to add block info to db transaction: ").append(mdb_strerror(result)).c_str()));
 
@@ -694,7 +694,7 @@ void BlockchainLMDB::add_output(const crypto::hash& tx_hash, const tx_out& tx_ou
   MDB_val_copy<uint64_t> k(m_num_outputs);
   MDB_val_copy<crypto::hash> v(tx_hash);
 
-  result = mdb_cursor_put(m_cur_output_txs, &k, &v, 0);
+  result = mdb_cursor_put(m_cur_output_txs, &k, &v, MDB_APPEND);
   if (result)
     throw0(DB_ERROR(std::string("Failed to add output tx hash to db transaction: ").append(mdb_strerror(result)).c_str()));
   result = mdb_cursor_put(m_cur_tx_outputs, &v, &k, 0);
@@ -702,7 +702,7 @@ void BlockchainLMDB::add_output(const crypto::hash& tx_hash, const tx_out& tx_ou
     throw0(DB_ERROR(std::string("Failed to add <tx hash, global output index> to db transaction: ").append(mdb_strerror(result)).c_str()));
 
   MDB_val_copy<uint64_t> val_local_index(local_index);
-  result = mdb_cursor_put(m_cur_output_indices, &k, &val_local_index, 0);
+  result = mdb_cursor_put(m_cur_output_indices, &k, &val_local_index, MDB_APPEND);
   if (result)
     throw0(DB_ERROR(std::string("Failed to add tx output index to db transaction: ").append(mdb_strerror(result)).c_str()));
 
@@ -720,7 +720,7 @@ void BlockchainLMDB::add_output(const crypto::hash& tx_hash, const tx_out& tx_ou
 
     MDB_val_copy<output_data_t> data(od);
     //MDB_val_copy<crypto::public_key> val_pubkey(boost::get<txout_to_key>(tx_output.target).key);
-    if (mdb_cursor_put(m_cur_output_keys, &k, &data, 0))
+    if (mdb_cursor_put(m_cur_output_keys, &k, &data, MDB_APPEND))
       throw0(DB_ERROR("Failed to add output pubkey to db transaction"));
   }
   else
@@ -2591,7 +2591,7 @@ void BlockchainLMDB::set_hard_fork_starting_height(uint8_t version, uint64_t hei
 
   MDB_val_copy<uint8_t> val_key(version);
   MDB_val_copy<uint64_t> val_value(height);
-  if (auto result = mdb_put(*txn_ptr, m_hf_starting_heights, &val_key, &val_value, 0))
+  if (auto result = mdb_put(*txn_ptr, m_hf_starting_heights, &val_key, &val_value, MDB_APPEND))
     throw1(DB_ERROR(std::string("Error adding hard fork starting height to db transaction: ").append(mdb_strerror(result)).c_str()));
 
   TXN_POSTFIX_SUCCESS();
@@ -2626,7 +2626,11 @@ void BlockchainLMDB::set_hard_fork_version(uint64_t height, uint8_t version)
 
   MDB_val_copy<uint64_t> val_key(height);
   MDB_val_copy<uint8_t> val_value(version);
-  if (auto result = mdb_put(*txn_ptr, m_hf_versions, &val_key, &val_value, 0))
+  int result;
+  result = mdb_put(*txn_ptr, m_hf_versions, &val_key, &val_value, MDB_APPEND);
+  if (result == MDB_KEYEXIST)
+    result = mdb_put(*txn_ptr, m_hf_versions, &val_key, &val_value, 0);
+  if (result)
     throw1(DB_ERROR(std::string("Error adding hard fork version to db transaction: ").append(mdb_strerror(result)).c_str()));
 
   TXN_POSTFIX_SUCCESS();
