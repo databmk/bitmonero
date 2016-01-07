@@ -663,6 +663,7 @@ static void (*const extra_hashes[4])(const void *, size_t, char *) = {
 
 #include "aesb.c"
 
+#if 0
 STATIC INLINE void ___mul128(uint32_t *a, uint32_t *b, uint32_t *h, uint32_t *l)
 {
   // ND: 64x64 multiplication for ARM7
@@ -689,6 +690,19 @@ STATIC INLINE void mul(const uint8_t* a, const uint8_t* b, uint8_t* res)
 {
   ___mul128((uint32_t *) a, (uint32_t *) b, (uint32_t *) (res + 0), (uint32_t *) (res + 8));
 }
+
+#else
+STATIC INLINE void mul(const uint8_t* a, const uint8_t* b, uint8_t* res) {
+  uint64_t a0, b0;
+  uint64_t hi, lo;
+
+  a0 = SWAP64LE(((uint64_t*)a)[0]);
+  b0 = SWAP64LE(((uint64_t*)b)[0]);
+  lo = mul128(a0, b0, &hi);
+  ((uint64_t*)res)[0] = SWAP64LE(hi);
+  ((uint64_t*)res)[1] = SWAP64LE(lo);
+}
+#endif
 
 STATIC INLINE void sum_half_blocks(uint8_t* a, const uint8_t* b)
 {
