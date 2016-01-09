@@ -605,14 +605,16 @@ void BlockchainLMDB::remove_block()
   if (mdb_get(*m_write_txn, m_block_info, &k, &h))
       throw1(BLOCK_DNE("Attempting to remove block that's not in the db"));
 
+  // must use h now, deleting from m_block_info will invalidate it
+  if (mdb_del(*m_write_txn, m_block_heights, &h, NULL))
+      throw1(DB_ERROR("Failed to add removal of block height by hash to db transaction"));
+
   if (mdb_del(*m_write_txn, m_blocks, &k, NULL))
       throw1(DB_ERROR("Failed to add removal of block to db transaction"));
 
   if (mdb_del(*m_write_txn, m_block_info, &k, NULL))
       throw1(DB_ERROR("Failed to add removal of block info to db transaction"));
 
-  if (mdb_del(*m_write_txn, m_block_heights, &h, NULL))
-      throw1(DB_ERROR("Failed to add removal of block height by hash to db transaction"));
 }
 
 #define CURSOR(name) \
