@@ -602,17 +602,23 @@ void BlockchainLMDB::remove_block()
 
   MDB_val_copy<uint64_t> k(m_height - 1);
   MDB_val h;
-  if (mdb_get(*m_write_txn, m_block_info, &k, &h))
+  mdb_block_info *bi;
+  lmdb_cur cur(*m_write_txn, m_block_info);
+  if (mdb_cursor_get(cur, &k, &h, MDB_SET))
       throw1(BLOCK_DNE("Attempting to remove block that's not in the db"));
+
+  // must use h now, deleting from m_block_info will invalidate it
+  bi = (mdb_block_info *)h.mv_data;
+  h.mv_data = &bi->bi_hash;
+  h.mv_size = sizeof(bi->bi_hash);
+  if (mdb_del(*m_write_txn, m_block_heights, &h, NULL))
+      throw1(DB_ERROR("Failed to add removal of block height by hash to db transaction"));
+
+  if (mdb_cursor_del(cur, 0))
+      throw1(DB_ERROR("Failed to add removal of block info to db transaction"));
 
   if (mdb_del(*m_write_txn, m_blocks, &k, NULL))
       throw1(DB_ERROR("Failed to add removal of block to db transaction"));
-
-  if (mdb_del(*m_write_txn, m_block_info, &k, NULL))
-      throw1(DB_ERROR("Failed to add removal of block info to db transaction"));
-
-  if (mdb_del(*m_write_txn, m_block_heights, &h, NULL))
-      throw1(DB_ERROR("Failed to add removal of block height by hash to db transaction"));
 }
 
 #define CURSOR(name) \
