@@ -1358,40 +1358,55 @@ block BlockchainLMDB::get_block_from_height(const uint64_t& height) const
   return b;
 }
 
-void BlockchainLMDB::get_block_info(const uint64_t height) const
+const mdb_block_info *BlockchainLMDB::get_block_info(const uint64_t height) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   check_open();
+  MDB_txn *txn_ptr;
+  MDB_cursor *cursor;
 
   if (!m_recent_info->m_info.get()) {
     m_recent_info->m_info.reset(new mdb_block_hinfo);
-	m_recent_info->m_info->bh_height = UINT64_MAX;
+	if (mdb_txn_begin(m_env, NULL, MDB_RDONLY, &m_recent_info->m_info->bh_rtxn))
+	  throw0(DB_ERROR("Error attempting to open a read-only txn"));
+	if (mdb_cursor_open(m_recent_info->m_info->bh_rtxn, m_block_info, &m_recent_info->m_info->bh_cursor))
+	  throw0(DB_ERROR("Error attempting to open a read-only cursor"));
   }
 
-  if (m_recent_info->m_info->bh_height != height) {
-    TXN_PREFIX_RDONLY();
-    m_recent_info->m_info->bh_height = height;
-    MDB_val_copy<uint64_t> key(height);
-    MDB_val result;
-    auto get_result = mdb_get(*txn_ptr, m_block_info, &key, &result);
-    if (get_result == MDB_NOTFOUND)
-    {
-      throw0(BLOCK_DNE(std::string("Attempt to get block info from height ").append(boost::lexical_cast<std::string>(height)).append(" failed -- height not in db").c_str()));
-    }
-    else if (get_result)
-      throw0(DB_ERROR("Error attempting to retrieve a block info from the db"));
-
-    memcpy(&m_recent_info->m_info->bh_info, result.mv_data, sizeof(mdb_block_info));
-    TXN_POSTFIX_SUCCESS();
+  if (m_batch_active)
+    txn_ptr = m_write_txn->m_txn;
+  else {
+    txn_ptr = m_recent_info->m_info->bh_rtxn;
+	cursor = m_recent_info->m_info->bh_cursor;
+	if (mdb_txn_id(txn_ptr) < m_txnid) {
+	  mdb_txn_reset(txn_ptr);
+	  mdb_txn_renew(txn_ptr);
+	  mdb_cursor_renew(txn_ptr, cursor);
+	}
   }
+
+  MDB_val_copy<uint64_t> key(height);
+  MDB_val result;
+  int get_result;
+  if (m_batch_active)
+    get_result = mdb_get(txn_ptr, m_block_info, &key, &result);
+  else
+    get_result = mdb_cursor_get(cursor, &key, &result, MDB_SET);
+  if (get_result == MDB_NOTFOUND)
+  {
+    throw0(BLOCK_DNE(std::string("Attempt to get block info from height ").append(boost::lexical_cast<std::string>(height)).append(" failed -- height not in db").c_str()));
+  }
+  else if (get_result)
+    throw0(DB_ERROR("Error attempting to retrieve a block info from the db"));
+
+  return (const mdb_block_info *)result.mv_data;
 }
 
 uint64_t BlockchainLMDB::get_block_timestamp(const uint64_t& height) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
 
-  get_block_info((uint64_t)height);
-  return m_recent_info->m_info->bh_info.bi_timestamp;
+  return get_block_info((uint64_t)height)->bi_timestamp;
 }
 
 uint64_t BlockchainLMDB::get_top_block_timestamp() const
@@ -1412,16 +1427,14 @@ size_t BlockchainLMDB::get_block_size(const uint64_t& height) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
 
-  get_block_info(height);
-  return m_recent_info->m_info->bh_info.bi_size;
+  return get_block_info(height)->bi_size;
 }
 
 difficulty_type BlockchainLMDB::get_block_cumulative_difficulty(const uint64_t& height) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__ << "  height: " << height);
 
-  get_block_info(height);
-  return m_recent_info->m_info->bh_info.bi_diff;
+  return get_block_info(height)->bi_diff;
 }
 
 difficulty_type BlockchainLMDB::get_block_difficulty(const uint64_t& height) const
@@ -1461,16 +1474,14 @@ uint64_t BlockchainLMDB::get_block_already_generated_coins(const uint64_t& heigh
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
 
-  get_block_info(height);
-  return m_recent_info->m_info->bh_info.bi_coins;
+  return get_block_info(height)->bi_coins;
 }
 
 crypto::hash BlockchainLMDB::get_block_hash_from_height(const uint64_t& height) const
 {
   LOG_PRINT_L3("BlockchainLMDB::" << __func__);
 
-  get_block_info(height);
-  return m_recent_info->m_info->bh_info.bi_hash;
+  return get_block_info(height)->bi_hash;
 }
 
 std::vector<block> BlockchainLMDB::get_blocks_range(const uint64_t& h1, const uint64_t& h2) const
@@ -2330,6 +2341,7 @@ uint64_t BlockchainLMDB::add_block(const block& blk, const size_t& block_size, c
       m_cur_tx_unlocks = nullptr;
 
       m_cur_spent_keys = nullptr;
+	  m_txnid = mdb_txn_id(txn);
 
       TIME_MEASURE_START(time1);
       txn.commit();

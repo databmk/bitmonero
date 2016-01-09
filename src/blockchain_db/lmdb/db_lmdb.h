@@ -85,8 +85,13 @@ typedef struct mdb_block_info {
 } mdb_block_info;
 
 typedef struct mdb_block_hinfo {
-	uint64_t bh_height;
-	mdb_block_info bh_info;
+	MDB_txn *bh_rtxn;
+	MDB_cursor *bh_cursor;
+	~mdb_block_hinfo()
+	{
+	  mdb_cursor_close(bh_cursor);
+	  mdb_txn_abort(bh_rtxn);
+	}
 } mdb_block_hinfo;
 
 typedef struct mdb_recent_info {
@@ -224,7 +229,7 @@ private:
   void check_and_resize_for_batch(uint64_t batch_num_blocks);
   uint64_t get_estimated_batch_size(uint64_t batch_num_blocks) const;
 
-  void get_block_info(const uint64_t height) const;
+  const mdb_block_info *get_block_info(const uint64_t height) const;
   virtual void add_block( const block& blk
                 , const size_t& block_size
                 , const difficulty_type& cumulative_difficulty
@@ -325,6 +330,7 @@ private:
   bool m_batch_active; // whether batch transaction is in progress
 
   mdb_recent_info *m_recent_info;
+  mdb_size_t m_txnid;  // ID of last write txn
 
   MDB_cursor *m_cur_output_txs;
   MDB_cursor *m_cur_tx_outputs;
