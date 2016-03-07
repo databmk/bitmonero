@@ -668,7 +668,6 @@ void BlockchainLMDB::remove_transaction_data(const crypto::hash& tx_hash, const 
 
   txindex ti = {tx_hash};
   MDB_val val_h = {sizeof(ti), (void *)&ti};
-  MDB_val v;
 
   if (mdb_cursor_get(m_cur_tx_indices, (MDB_val *)&zerokval, &val_h, MDB_GET_BOTH))
       throw1(TX_DNE("Attempting to remove transaction that isn't in the db"));
@@ -733,7 +732,7 @@ void BlockchainLMDB::add_output(const crypto::hash& tx_hash,
   if (result)
     throw0(DB_ERROR(lmdb_error("Failed to add output amount to db transaction: ", result).c_str()));
 
-  size_t num_elems = 0;
+  mdb_size_t num_elems = 0;
   result = mdb_cursor_count(m_cur_output_amounts, &num_elems);
   if (result)
     throw0(DB_ERROR(std::string("Failed to get number of outputs for amount: ").append(mdb_strerror(result)).c_str()));
