@@ -1369,20 +1369,21 @@ bool BlockchainLMDB::block_exists(const crypto::hash& h) const
   TXN_PREFIX_RDONLY();
   RCURSOR(block_heights);
 
+  bool ret = false;
   blk_height bh = {h, 0};
   MDB_val key = {sizeof(bh), (void *)&bh};
   auto get_result = mdb_cursor_get(m_cur_block_heights, (MDB_val *)&zerokval, &key, MDB_GET_BOTH);
   if (get_result == MDB_NOTFOUND)
   {
-    TXN_POSTFIX_RDONLY();
     LOG_PRINT_L3("Block with hash " << epee::string_tools::pod_to_hex(h) << " not found in db");
-    return false;
   }
   else if (get_result)
     throw0(DB_ERROR(lmdb_error("DB error attempting to fetch block index from hash", get_result).c_str()));
+  else
+    ret = true;
 
   TXN_POSTFIX_RDONLY();
-  return true;
+  return ret;
 }
 
 block BlockchainLMDB::get_block(const crypto::hash& h) const
@@ -1729,15 +1730,17 @@ bool BlockchainLMDB::tx_exists(const crypto::hash& h, uint64_t& tx_index) const
 
   TXN_POSTFIX_RDONLY();
 
+  bool ret = false;
   if (get_result == MDB_NOTFOUND)
   {
     LOG_PRINT_L1("transaction with hash " << epee::string_tools::pod_to_hex(h) << " not found in db");
-    return false;
   }
   else if (get_result)
     throw0(DB_ERROR(lmdb_error("DB error attempting to fetch transaction from hash", get_result).c_str()));
+  else
+    ret = true;
 
-  return true;
+  return ret;
 }
 
 uint64_t BlockchainLMDB::get_tx_unlock_time(const crypto::hash& h) const
@@ -1863,17 +1866,14 @@ uint64_t BlockchainLMDB::get_num_outputs(const uint64_t& amount) const
 
   MDB_val_copy<uint64_t> k(amount);
   MDB_val v;
-  auto result = mdb_cursor_get(m_cur_output_amounts, &k, &v, MDB_SET);
-  if (result == MDB_NOTFOUND)
-  {
-    TXN_POSTFIX_RDONLY();
-    return 0;
-  }
-  else if (result)
-    throw0(DB_ERROR("DB error attempting to get number of outputs of an amount"));
-
   mdb_size_t num_elems = 0;
-  mdb_cursor_count(m_cur_output_amounts, &num_elems);
+  auto result = mdb_cursor_get(m_cur_output_amounts, &k, &v, MDB_SET);
+  if (result == MDB_SUCCESS)
+  {
+    mdb_cursor_count(m_cur_output_amounts, &num_elems);
+  }
+  else if (result != MDB_NOTFOUND)
+    throw0(DB_ERROR("DB error attempting to get number of outputs of an amount"));
 
   TXN_POSTFIX_RDONLY();
 
@@ -2025,6 +2025,7 @@ bool BlockchainLMDB::has_key_image(const crypto::key_image& img) const
 
   MDB_val k = {sizeof(img), (void *)&img};
   ret = (mdb_cursor_get(m_cur_spent_keys, (MDB_val *)&zerokval, &k, MDB_GET_BOTH) == 0);
+
   TXN_POSTFIX_RDONLY();
   return ret;
 }
@@ -2318,7 +2319,8 @@ bool BlockchainLMDB::block_rtxn_start(MDB_txn **mtxn, mdb_txn_cursors **mcur) co
   *mtxn = m_tinfo->m_ti_rtxn;
   *mcur = &m_tinfo->m_ti_rcursors;
 
-  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  if (ret)
+    LOG_PRINT_L3("BlockchainLMDB::" << __func__);
   return ret;
 }
 
@@ -2779,18 +2781,21 @@ uint64_t BlockchainLMDB::get_hard_fork_starting_height(uint8_t version) const
 
   MDB_val_copy<uint8_t> val_key(version);
   MDB_val val_ret;
-  auto result = mdb_get(m_txn, m_hf_starting_heights, &val_key, &val_ret);
-  if (result == MDB_NOTFOUND)
-    return std::numeric_limits<uint64_t>::max();
-  if (result)
-    throw0(DB_ERROR("Error attempting to retrieve a hard fork starting height from the db"));
-
   uint64_t ret;
+  auto result = mdb_get(m_txn, m_hf_starting_heights, &val_key, &val_ret);
+  if (result == MDB_SUCCESS)
+  {
 #ifdef MISALIGNED_OK
-  ret = *(const uint64_t*)val_ret.mv_data;
+    ret = *(const uint64_t*)val_ret.mv_data;
 #else
-  memcpy(&ret, val_ret.mv_data, sizeof(uint64_t));
+    memcpy(&ret, val_ret.mv_data, sizeof(uint64_t));
 #endif
+  } else if (result == MDB_NOTFOUND)
+  {
+    ret = std::numeric_limits<uint64_t>::max();
+  } else if (result)
+    throw0(DB_ERROR(lmdb_error("Error attempting to retrieve a hard fork starting height from the db", result).c_str()));
+
   TXN_POSTFIX_RDONLY();
   return ret;
 }
