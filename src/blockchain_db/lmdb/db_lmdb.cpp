@@ -240,6 +240,8 @@ mdb_txn_safe::mdb_txn_safe(const bool check) : m_txn(NULL), m_tinfo(NULL), m_che
 
 mdb_txn_safe::~mdb_txn_safe()
 {
+  if (!m_check)
+    return;
   LOG_PRINT_L3("mdb_txn_safe: destructor");
   if (m_tinfo != nullptr)
   {
@@ -263,8 +265,7 @@ mdb_txn_safe::~mdb_txn_safe()
     }
     mdb_txn_abort(m_txn);
   }
-  if (m_check)
-    num_active_txns--;
+  num_active_txns--;
 }
 
 void mdb_txn_safe::commit(std::string message)
@@ -544,10 +545,11 @@ void BlockchainLMDB::add_block(const block& blk, const size_t& block_size, const
   {
     MDB_val_copy<crypto::hash> parent_key(blk.prev_id);
     MDB_val parent_h;
-    if (mdb_cursor_get(m_cur_block_heights, &parent_key, &parent_h, MDB_SET))
+    if (auto result = mdb_cursor_get(m_cur_block_heights, &parent_key, &parent_h, MDB_SET))
     {
       LOG_PRINT_L3("m_height: " << m_height);
       LOG_PRINT_L3("parent_key: " << blk.prev_id);
+      assert(result == 0);
       throw0(DB_ERROR("Failed to get top block hash to check for new block's parent"));
     }
     uint64_t parent_height = *(const uint64_t *)parent_h.mv_data;
@@ -1576,6 +1578,7 @@ crypto::hash BlockchainLMDB::get_block_hash_from_height(const uint64_t& height) 
   auto get_result = mdb_cursor_get(m_cur_block_hashes, &key, &result, MDB_SET);
   if (get_result == MDB_NOTFOUND)
   {
+    assert(get_result != MDB_NOTFOUND);
     throw0(BLOCK_DNE(std::string("Attempt to get hash from height ").append(boost::lexical_cast<std::string>(height)).append(" failed -- hash not in db").c_str()));
   }
   else if (get_result)
