@@ -39,15 +39,6 @@
 namespace cryptonote
 {
 
-typedef struct mdb_block_info
-{
-  uint64_t bi_timestamp;
-  uint64_t bi_coins;
-  size_t bi_size;
-  difficulty_type bi_diff;
-  crypto::hash bi_hash;
-} mdb_block_info;
-
 typedef struct mdb_txn_cursors
 {
   MDB_cursor *m_txc_blocks;
