@@ -57,6 +57,8 @@
 #include "version.h"
 #include "crypto/crypto.h"  // for crypto::secret_key definition
 #include "mnemonics/electrum-words.h"
+#include "rapidjson/document.h"
+#include "common/json_util.h"
 #include <stdexcept>
 
 #if defined(WIN32)
@@ -81,6 +83,7 @@ namespace
   const command_line::arg_descriptor<std::string> arg_generate_new_wallet = {"generate-new-wallet", sw::tr("Generate new wallet and save it to <arg> or <address>.wallet by default"), ""};
   const command_line::arg_descriptor<std::string> arg_generate_from_view_key = {"generate-from-view-key", sw::tr("Generate incoming-only wallet from view key"), ""};
   const command_line::arg_descriptor<std::string> arg_generate_from_keys = {"generate-from-keys", sw::tr("Generate wallet from private keys"), ""};
+  const command_line::arg_descriptor<std::string> arg_generate_from_json = {"generate-from-json", sw::tr("Generate wallet from JSON format file"), ""};
   const command_line::arg_descriptor<std::string> arg_daemon_address = {"daemon-address", sw::tr("Use daemon instance at <host>:<port>"), ""};
   const command_line::arg_descriptor<std::string> arg_daemon_host = {"daemon-host", sw::tr("Use daemon instance at host <arg> instead of localhost"), ""};
   const command_line::arg_descriptor<std::string> arg_password = {"password", sw::tr("Wallet password"), "", true};
@@ -255,6 +258,8 @@ bool simple_wallet::seed(const std::vector<std::string> &args/* = std::vector<st
     if (m_wallet->get_seed_language().empty())
     {
       std::string mnemonic_language = get_mnemonic_language();
+      if (mnemonic_language.empty())
+        return true;
       m_wallet->set_seed_language(mnemonic_language);
     }
 
@@ -302,6 +307,8 @@ bool simple_wallet::seed_set_language(const std::vector<std::string> &args/* = s
   }
 
   std::string mnemonic_language = get_mnemonic_language();
+  if (mnemonic_language.empty())
+    return true;
   m_wallet->set_seed_language(mnemonic_language);
   m_wallet->rewrite(m_wallet_file, pwd_container.password());
   return true;
@@ -539,7 +546,7 @@ simple_wallet::simple_wallet()
   m_cmd_binder.set_handler("bc_height", boost::bind(&simple_wallet::show_blockchain_height, this, _1), tr("Show blockchain height"));
   m_cmd_binder.set_handler("transfer", boost::bind(&simple_wallet::transfer, this, _1), tr("transfer [<mixin_count>] <addr_1> <amount_1> [<addr_2> <amount_2> ... <addr_N> <amount_N>] [payment_id] - Transfer <amount_1>,... <amount_N> to <address_1>,... <address_N>, respectively. <mixin_count> is the number of extra inputs to include for untraceability (from 0 to maximum available)"));
   m_cmd_binder.set_handler("transfer_new", boost::bind(&simple_wallet::transfer_new, this, _1), tr("Same as transfer, but using a new transaction building algorithm"));
-  m_cmd_binder.set_handler("sweep_dust", boost::bind(&simple_wallet::sweep_dust, this, _1), tr("Send all dust outputs to yourself with mixin 0"));
+  m_cmd_binder.set_handler("sweep_unmixable", boost::bind(&simple_wallet::sweep_unmixable, this, _1), tr("Send all unmixable outputs to yourself with mixin 0"));
   m_cmd_binder.set_handler("set_log", boost::bind(&simple_wallet::set_log, this, _1), tr("set_log <level> - Change current log detail level, <0-4>"));
   m_cmd_binder.set_handler("address", boost::bind(&simple_wallet::print_address, this, _1), tr("Show current wallet public address"));
   m_cmd_binder.set_handler("integrated_address", boost::bind(&simple_wallet::print_integrated_address, this, _1), tr("integrated_address [PID] - Encode a payment ID into an integrated address for the current wallet public address (no argument uses a random payment ID), or decode an integrated address to standard address and payment ID"));
@@ -696,6 +703,10 @@ bool simple_wallet::ask_wallet_create_if_needed()
         tr("Specify wallet file name (e.g., MyWallet). If the wallet doesn't exist, it will be created.\n"
         "Wallet file name: ")
     );
+    if (std::cin.eof())
+    {
+      return false;
+    }
     valid_path = tools::wallet2::wallet_valid_path_format(wallet_path);
     if (!valid_path)
     {
@@ -716,7 +727,7 @@ bool simple_wallet::ask_wallet_create_if_needed()
   // add logic to error out if new wallet requested but named wallet file exists
   if (keys_file_exists || wallet_file_exists)
   {
-    if (!m_generate_new.empty() || m_restore_deterministic_wallet || !m_generate_from_view_key.empty() || !m_generate_from_keys.empty())
+    if (!m_generate_new.empty() || m_restore_deterministic_wallet || !m_generate_from_view_key.empty() || !m_generate_from_keys.empty() || !m_generate_from_json.empty())
     {
       fail_msg_writer() << tr("attempting to generate or restore wallet, but specified file(s) exist.  Exiting to not risk overwriting.");
       return false;
@@ -763,6 +774,13 @@ void simple_wallet::print_seed(std::string seed)
 //----------------------------------------------------------------------------------------------------
 static bool get_password(const boost::program_options::variables_map& vm, bool allow_entry, tools::password_container &pwd_container)
 {
+  // has_arg returns true even when the parameter is not passed ??
+  const std::string gfj = command_line::get_arg(vm, arg_generate_from_json);
+  if (!gfj.empty()) {
+    // will be in the json file, if any
+    return true;
+  }
+
   if (has_arg(vm, arg_password) && has_arg(vm, arg_password_file))
   {
     fail_msg_writer() << tr("can't specify more than one of --password and --password-file");
@@ -809,6 +827,173 @@ static bool get_password(const boost::program_options::variables_map& vm, bool a
 }
 
 //----------------------------------------------------------------------------------------------------
+bool simple_wallet::generate_from_json(const boost::program_options::variables_map& vm, std::string &wallet_file, std::string &password)
+{
+  std::string buf;
+  bool r = epee::file_io_utils::load_file_to_string(m_generate_from_json, buf);
+  if (!r) {
+    fail_msg_writer() << tr("Failed to load file ") << m_generate_from_json;
+    return false;
+  }
+
+  rapidjson::Document json;
+  if (json.Parse(buf.c_str()).HasParseError()) {
+    fail_msg_writer() << tr("Failed to parse JSON");
+    return false;
+  }
+
+  GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, version, unsigned, Uint, true);
+  const int current_version = 1;
+  if (field_version > current_version) {
+    fail_msg_writer() << boost::format(tr("Version %u too new, we can only grok up to %u")) % field_version % current_version;
+    return false;
+  }
+
+  GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, filename, std::string, String, true);
+
+  GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, scan_from_height, uint64_t, Uint64, false);
+  bool recover = field_scan_from_height_found;
+
+  GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, password, std::string, String, false);
+  password = field_password;
+
+  GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, viewkey, std::string, String, false);
+  crypto::secret_key viewkey;
+  if (field_viewkey_found)
+  {
+    cryptonote::blobdata viewkey_data;
+    if(!epee::string_tools::parse_hexstr_to_binbuff(field_viewkey, viewkey_data))
+    {
+      fail_msg_writer() << tr("failed to parse view key secret key");
+      return false;
+    }
+    viewkey = *reinterpret_cast<const crypto::secret_key*>(viewkey_data.data());
+  }
+
+  GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, spendkey, std::string, String, false);
+  crypto::secret_key spendkey;
+  if (field_spendkey_found)
+  {
+    cryptonote::blobdata spendkey_data;
+    if(!epee::string_tools::parse_hexstr_to_binbuff(field_spendkey, spendkey_data))
+    {
+      fail_msg_writer() << tr("failed to parse spend key secret key");
+      return false;
+    }
+    spendkey = *reinterpret_cast<const crypto::secret_key*>(spendkey_data.data());
+  }
+
+  GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, seed, std::string, String, false);
+  std::string old_language;
+  if (field_seed_found)
+  {
+    if (!crypto::ElectrumWords::words_to_bytes(field_seed, m_recovery_key, old_language))
+    {
+      fail_msg_writer() << tr("Electrum-style word list failed verification");
+      return false;
+    }
+    m_electrum_seed = field_seed;
+    m_restore_deterministic_wallet = true;
+  }
+
+  // compatibility checks
+  if (!field_seed_found && !field_viewkey_found)
+  {
+    fail_msg_writer() << tr("At least one of Electrum-style word list and private view key must be specified");
+    return false;
+  }
+  if (field_seed_found && (field_viewkey_found || field_spendkey_found))
+  {
+    fail_msg_writer() << tr("Both Electrum-style word list and private key(s) specified");
+    return false;
+  }
+
+  m_wallet_file = field_filename;
+
+  bool was_deprecated_wallet = m_restore_deterministic_wallet && ((old_language == crypto::ElectrumWords::old_language_name) ||
+    crypto::ElectrumWords::get_is_old_style_seed(m_electrum_seed));
+  if (was_deprecated_wallet) {
+    fail_msg_writer() << tr("Cannot create deprecated wallets from JSON");
+    return false;
+  }
+
+  bool testnet = command_line::get_arg(vm, arg_testnet);
+  m_wallet.reset(new tools::wallet2(testnet));
+  m_wallet->callback(this);
+
+  try
+  {
+    if (!field_seed.empty())
+    {
+      m_wallet->generate(m_wallet_file, password, m_recovery_key, recover, false);
+    }
+    else
+    {
+      cryptonote::account_public_address address;
+      if (!crypto::secret_key_to_public_key(viewkey, address.m_view_public_key)) {
+        fail_msg_writer() << tr("failed to verify view key secret key");
+        return false;
+      }
+      if (!crypto::secret_key_to_public_key(spendkey, address.m_spend_public_key)) {
+        fail_msg_writer() << tr("failed to verify spend key secret key");
+        return false;
+      }
+
+      if (field_spendkey.empty())
+      {
+        m_wallet->generate(m_wallet_file, password, address, viewkey);
+      }
+      else
+      {
+        m_wallet->generate(m_wallet_file, password, address, spendkey, viewkey);
+      }
+    }
+  }
+  catch (const std::exception& e)
+  {
+    fail_msg_writer() << tr("failed to generate new wallet: ") << e.what();
+    return false;
+  }
+
+  m_wallet->set_refresh_from_block_height(field_scan_from_height);
+
+  wallet_file = m_wallet_file;
+
+  return r;
+}
+
+static bool is_local_daemon(const std::string &address)
+{
+  // extract host
+  epee::net_utils::http::url_content u_c;
+  if (!epee::net_utils::parse_url(address, u_c))
+  {
+    LOG_PRINT_L1("Failed to determine whether daemon is local, assuming not");
+    return false;
+  }
+  if (u_c.host.empty())
+  {
+    LOG_PRINT_L1("Failed to determine whether daemon is local, assuming not");
+    return false;
+  }
+
+  // resolve to IP
+  boost::asio::io_service io_service;
+  boost::asio::ip::tcp::resolver resolver(io_service);
+  boost::asio::ip::tcp::resolver::query query(u_c.host, "");
+  boost::asio::ip::tcp::resolver::iterator i = resolver.resolve(query);
+  while (i != boost::asio::ip::tcp::resolver::iterator())
+  {
+    const boost::asio::ip::tcp::endpoint &ep = *i;
+    if (ep.address().is_loopback())
+      return true;
+    ++i;
+  }
+
+  return false;
+}
+
+//----------------------------------------------------------------------------------------------------
 bool simple_wallet::init(const boost::program_options::variables_map& vm)
 {
   if (!handle_command_line(vm))
@@ -820,12 +1005,12 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
     return false;
   }
 
-  if((!m_generate_new.empty()) + (!m_wallet_file.empty()) + (!m_generate_from_view_key.empty()) + (!m_generate_from_keys.empty()) > 1)
+  if((!m_generate_new.empty()) + (!m_wallet_file.empty()) + (!m_generate_from_view_key.empty()) + (!m_generate_from_keys.empty()) + (!m_generate_from_json.empty()) > 1)
   {
-    fail_msg_writer() << tr("can't specify more than one of --generate-new-wallet=\"wallet_name\", --wallet-file=\"wallet_name\", --generate-from-view-key=\"wallet_name\" and --generate-from-keys=\"wallet_name\"");
+    fail_msg_writer() << tr("can't specify more than one of --generate-new-wallet=\"wallet_name\", --wallet-file=\"wallet_name\", --generate-from-view-key=\"wallet_name\", --generate-from-json=\"jsonfilename\" and --generate-from-keys=\"wallet_name\"");
     return false;
   }
-  else if (m_generate_new.empty() && m_wallet_file.empty() && m_generate_from_view_key.empty() && m_generate_from_keys.empty())
+  else if (m_generate_new.empty() && m_wallet_file.empty() && m_generate_from_view_key.empty() && m_generate_from_keys.empty() && m_generate_from_json.empty())
   {
     if(!ask_wallet_create_if_needed()) return false;
   }
@@ -843,11 +1028,22 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
   if (m_daemon_address.empty())
     m_daemon_address = std::string("http://") + m_daemon_host + ":" + std::to_string(m_daemon_port);
 
+  // set --trusted-daemon if local
+  try
+  {
+    if (is_local_daemon(m_daemon_address))
+    {
+      LOG_PRINT_L1(tr("Daemon is local, assuming trusted"));
+      m_trusted_daemon = true;
+    }
+  }
+  catch (const std::exception &e) { }
+
   tools::password_container pwd_container;
   if (!get_password(vm, true, pwd_container))
     return false;
 
-  if (!m_generate_new.empty() || m_restore_deterministic_wallet || !m_generate_from_view_key.empty() || !m_generate_from_keys.empty())
+  if (!m_generate_new.empty() || m_restore_deterministic_wallet || !m_generate_from_view_key.empty() || !m_generate_from_keys.empty() || !m_generate_from_json.empty())
   {
     if (m_wallet_file.empty()) m_wallet_file = m_generate_new;  // alias for simplicity later
 
@@ -864,6 +1060,8 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
       if (m_electrum_seed.empty())
       {
         m_electrum_seed = command_line::input_line("Specify Electrum seed: ");
+        if (std::cin.eof())
+          return false;
         if (m_electrum_seed.empty())
         {
           fail_msg_writer() << tr("specify a recovery parameter with the --electrum-seed=\"words list here\"");
@@ -881,6 +1079,8 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
     {
       // parse address
       std::string address_string = command_line::input_line("Standard address: ");
+      if (std::cin.eof())
+        return false;
       if (address_string.empty()) {
         fail_msg_writer() << tr("No data supplied, cancelled");
         return false;
@@ -896,6 +1096,8 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
 
       // parse view secret key
       std::string viewkey_string = command_line::input_line("View key: ");
+      if (std::cin.eof())
+        return false;
       if (viewkey_string.empty()) {
         fail_msg_writer() << tr("No data supplied, cancelled");
         return false;
@@ -928,6 +1130,8 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
     {
       // parse address
       std::string address_string = command_line::input_line("Standard address: ");
+      if (std::cin.eof())
+        return false;
       if (address_string.empty()) {
         fail_msg_writer() << tr("No data supplied, cancelled");
         return false;
@@ -943,6 +1147,8 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
 
       // parse spend secret key
       std::string spendkey_string = command_line::input_line("Spend key: ");
+      if (std::cin.eof())
+        return false;
       if (spendkey_string.empty()) {
         fail_msg_writer() << tr("No data supplied, cancelled");
         return false;
@@ -957,6 +1163,8 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
 
       // parse view secret key
       std::string viewkey_string = command_line::input_line("View key: ");
+      if (std::cin.eof())
+        return false;
       if (viewkey_string.empty()) {
         fail_msg_writer() << tr("No data supplied, cancelled");
         return false;
@@ -993,6 +1201,12 @@ bool simple_wallet::init(const boost::program_options::variables_map& vm)
       bool r = new_wallet(m_wallet_file, pwd_container.password(), address, spendkey, viewkey, testnet);
       CHECK_AND_ASSERT_MES(r, false, tr("account creation failed"));
     }
+    else if (!m_generate_from_json.empty())
+    {
+      std::string wallet_file, password; // we don't need to remember them
+      if (!generate_from_json(vm, wallet_file, password))
+        return false;
+    }
     else
     {
       bool r = new_wallet(m_wallet_file, pwd_container.password(), m_recovery_key, m_restore_deterministic_wallet,
@@ -1023,6 +1237,7 @@ bool simple_wallet::handle_command_line(const boost::program_options::variables_
   m_generate_new                  = command_line::get_arg(vm, arg_generate_new_wallet);
   m_generate_from_view_key        = command_line::get_arg(vm, arg_generate_from_view_key);
   m_generate_from_keys            = command_line::get_arg(vm, arg_generate_from_keys);
+  m_generate_from_json            = command_line::get_arg(vm, arg_generate_from_json);
   m_daemon_address                = command_line::get_arg(vm, arg_daemon_address);
   m_daemon_host                   = command_line::get_arg(vm, arg_daemon_host);
   m_daemon_port                   = command_line::get_arg(vm, arg_daemon_port);
@@ -1069,6 +1284,8 @@ std::string simple_wallet::get_mnemonic_language()
   while (language_number < 0)
   {
     language_choice = command_line::input_line(tr("Enter the number corresponding to the language of your choice: "));
+    if (std::cin.eof())
+      return std::string();
     try
     {
       language_number = std::stoi(language_choice);
@@ -1107,6 +1324,8 @@ bool simple_wallet::new_wallet(const std::string &wallet_file, const std::string
         "a deprecated version of the wallet. Please use the new seed that we provide.\n");
     }
     mnemonic_language = get_mnemonic_language();
+    if (mnemonic_language.empty())
+      return false;
   }
 
   m_wallet_file = wallet_file;
@@ -1234,6 +1453,8 @@ bool simple_wallet::open_wallet(const string &wallet_file, const std::string& pa
         message_writer(epee::log_space::console_color_green, false) << "\n" << tr("You had been using "
           "a deprecated version of the wallet. Please proceed to upgrade your wallet.\n");
         std::string mnemonic_language = get_mnemonic_language();
+        if (mnemonic_language.empty())
+          return false;
         m_wallet->set_seed_language(mnemonic_language);
         m_wallet->rewrite(m_wallet_file, password);
 
@@ -1559,8 +1780,7 @@ bool simple_wallet::refresh(const std::vector<std::string>& args)
 bool simple_wallet::show_balance(const std::vector<std::string>& args/* = std::vector<std::string>()*/)
 {
   success_msg_writer() << tr("Balance: ") << print_money(m_wallet->balance()) << ", "
-    << tr("unlocked balance: ") << print_money(m_wallet->unlocked_balance()) << ", "
-    << tr("including unlocked dust: ") << print_money(m_wallet->unlocked_dust_balance(tools::tx_dust_policy(::config::DEFAULT_DUST_THRESHOLD)));
+    << tr("unlocked balance: ") << print_money(m_wallet->unlocked_balance());
   return true;
 }
 //----------------------------------------------------------------------------------------------------
@@ -1851,6 +2071,10 @@ bool simple_wallet::transfer_main(bool new_algorithm, const std::vector<std::str
 
           // prompt the user for confirmation given the dns query and dnssec status
           std::string confirm_dns_ok = command_line::input_line(prompt.str());
+          if (std::cin.eof())
+          {
+            return true;
+          }
           if (confirm_dns_ok != "Y" && confirm_dns_ok != "y" && confirm_dns_ok != "Yes" && confirm_dns_ok != "yes"
             && confirm_dns_ok != tr("yes") && confirm_dns_ok != tr("no"))
           {
@@ -1935,6 +2159,8 @@ bool simple_wallet::transfer_main(bool new_algorithm, const std::vector<std::str
             print_money(total_fee)).str();
         }
         std::string accepted = command_line::input_line(prompt_str);
+        if (std::cin.eof())
+          return true;
         if (accepted != "Y" && accepted != "y" && accepted != "Yes" && accepted != "yes")
         {
           fail_msg_writer() << tr("transaction cancelled.");
@@ -1997,6 +2223,9 @@ bool simple_wallet::transfer_main(bool new_algorithm, const std::vector<std::str
   catch (const tools::error::tx_rejected& e)
   {
     fail_msg_writer() << (boost::format(tr("transaction %s was rejected by daemon with status: ")) % get_transaction_hash(e.tx())) << e.status();
+    std::string reason = e.reason();
+    if (!reason.empty())
+      fail_msg_writer() << tr("Reason: ") << reason;
   }
   catch (const tools::error::tx_sum_overflow& e)
   {
@@ -2045,7 +2274,7 @@ bool simple_wallet::transfer_new(const std::vector<std::string> &args_)
 }
 
 //----------------------------------------------------------------------------------------------------
-bool simple_wallet::sweep_dust(const std::vector<std::string> &args_)
+bool simple_wallet::sweep_unmixable(const std::vector<std::string> &args_)
 {
   if (!try_connect_to_daemon())
     return true;
@@ -2058,31 +2287,42 @@ bool simple_wallet::sweep_dust(const std::vector<std::string> &args_)
 
   try
   {
-    uint64_t total_dust = m_wallet->unlocked_dust_balance(tools::tx_dust_policy(::config::DEFAULT_DUST_THRESHOLD));
-
     // figure out what tx will be necessary
-    auto ptx_vector = m_wallet->create_dust_sweep_transactions();
+    auto ptx_vector = m_wallet->create_unmixable_sweep_transactions(m_trusted_daemon);
+
+    if (ptx_vector.empty())
+    {
+      fail_msg_writer() << tr("No unmixable outputs found");
+      return true;
+    }
 
     // give user total and fee, and prompt to confirm
-    uint64_t total_fee = 0;
+    uint64_t total_fee = 0, total_unmixable = 0;
     for (size_t n = 0; n < ptx_vector.size(); ++n)
     {
       total_fee += ptx_vector[n].fee;
+      for (const auto &vin: ptx_vector[n].tx.vin)
+      {
+        if (vin.type() == typeid(txin_to_key))
+          total_unmixable += boost::get<txin_to_key>(vin).amount;
+      }
     }
 
-    std::string prompt_str = tr("Sweeping ") + print_money(total_dust);
+    std::string prompt_str = tr("Sweeping ") + print_money(total_unmixable);
     if (ptx_vector.size() > 1) {
       prompt_str = (boost::format(tr("Sweeping %s in %llu transactions for a total fee of %s.  Is this okay?  (Y/Yes/N/No)")) %
-        print_money(total_dust) %
+        print_money(total_unmixable) %
         ((unsigned long long)ptx_vector.size()) %
         print_money(total_fee)).str();
     }
     else {
       prompt_str = (boost::format(tr("Sweeping %s for a total fee of %s.  Is this okay?  (Y/Yes/N/No)")) %
-        print_money(total_dust) %
+        print_money(total_unmixable) %
         print_money(total_fee)).str();
     }
     std::string accepted = command_line::input_line(prompt_str);
+    if (std::cin.eof())
+      return true;
     if (accepted != "Y" && accepted != "y" && accepted != "Yes" && accepted != "yes")
     {
       fail_msg_writer() << tr("transaction cancelled.");
@@ -2122,11 +2362,12 @@ bool simple_wallet::sweep_dust(const std::vector<std::string> &args_)
   }
   catch (const tools::error::not_enough_money& e)
   {
-    fail_msg_writer() << boost::format(tr("not enough money to transfer, available only %s, transaction amount %s = %s + %s (fee)")) %
+    fail_msg_writer() << boost::format(tr("not enough money to transfer, available only %s, transaction amount %s = %s + %s (fee).\n%s")) %
       print_money(e.available()) %
       print_money(e.tx_amount() + e.fee()) %
       print_money(e.tx_amount()) %
-      print_money(e.fee());
+      print_money(e.fee()) %
+      tr("This is usually due to dust which is so small it cannot pay for itself in fees");
   }
   catch (const tools::error::not_enough_outs_to_mix& e)
   {
@@ -2144,6 +2385,9 @@ bool simple_wallet::sweep_dust(const std::vector<std::string> &args_)
   catch (const tools::error::tx_rejected& e)
   {
     fail_msg_writer() << (boost::format(tr("transaction %s was rejected by daemon with status: ")) % get_transaction_hash(e.tx())) << e.status();
+    std::string reason = e.reason();
+    if (!reason.empty())
+      fail_msg_writer() << tr("Reason: ") << reason;
   }
   catch (const tools::error::tx_sum_overflow& e)
   {
@@ -2575,6 +2819,7 @@ int main(int argc, char* argv[])
   command_line::add_arg(desc_params, arg_generate_new_wallet);
   command_line::add_arg(desc_params, arg_generate_from_view_key);
   command_line::add_arg(desc_params, arg_generate_from_keys);
+  command_line::add_arg(desc_params, arg_generate_from_json);
   command_line::add_arg(desc_params, arg_password);
   command_line::add_arg(desc_params, arg_password_file);
   command_line::add_arg(desc_params, arg_daemon_address);
@@ -2707,11 +2952,21 @@ int main(int argc, char* argv[])
     if (daemon_address.empty())
       daemon_address = std::string("http://") + daemon_host + ":" + std::to_string(daemon_port);
 
+    std::string password;
+    const std::string gfj = command_line::get_arg(vm, arg_generate_from_json);
+    if (!gfj.empty()) {
+      if (!w.generate_from_json(vm, wallet_file, password))
+        return 1;
+    }
+    else {
+      password = pwd_container.password();
+    }
+
     tools::wallet2 wal(testnet,restricted);
     try
     {
       LOG_PRINT_L0(sw::tr("Loading wallet..."));
-      wal.load(wallet_file, pwd_container.password());
+      wal.load(wallet_file, password);
       wal.init(daemon_address);
       wal.refresh();
       LOG_PRINT_GREEN(sw::tr("Loaded ok"), LOG_LEVEL_0);

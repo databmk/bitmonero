@@ -355,24 +355,40 @@ namespace cryptonote
 
     cryptonote_connection_context fake_context = AUTO_VAL_INIT(fake_context);
     tx_verification_context tvc = AUTO_VAL_INIT(tvc);
-    if(!m_core.handle_incoming_tx(tx_blob, tvc, false, false))
+    if(!m_core.handle_incoming_tx(tx_blob, tvc, false, false) || tvc.m_verifivation_failed)
     {
-      LOG_PRINT_L0("[on_send_raw_tx]: Failed to process tx");
+      if (tvc.m_verifivation_failed)
+      {
+        LOG_PRINT_L0("[on_send_raw_tx]: tx verification failed");
+      }
+      else
+      {
+        LOG_PRINT_L0("[on_send_raw_tx]: Failed to process tx");
+      }
       res.status = "Failed";
-      return true;
-    }
-
-    if(tvc.m_verifivation_failed)
-    {
-      LOG_PRINT_L0("[on_send_raw_tx]: tx verification failed");
-      res.status = "Failed";
+      if ((res.low_mixin = tvc.m_low_mixin))
+        res.reason = "mixin too low";
+      if ((res.double_spend = tvc.m_double_spend))
+        res.reason = "double spend";
+      if ((res.invalid_input = tvc.m_invalid_input))
+        res.reason = "invalid input";
+      if ((res.invalid_output = tvc.m_invalid_output))
+        res.reason = "invalid output";
+      if ((res.too_big = tvc.m_too_big))
+        res.reason = "too big";
+      if ((res.overspend = tvc.m_overspend))
+        res.reason = "overspend";
+      if ((res.fee_too_low = tvc.m_fee_too_low))
+        res.reason = "fee too low";
       return true;
     }
 
     if(!tvc.m_should_be_relayed)
     {
       LOG_PRINT_L0("[on_send_raw_tx]: tx accepted, but not relayed");
-      res.status = "Not relayed";
+      res.reason = "Not relayed";
+      res.not_relayed = true;
+      res.status = CORE_RPC_STATUS_OK;
       return true;
     }
 
@@ -627,8 +643,10 @@ namespace cryptonote
       LOG_ERROR("Failed to calculate offset for ");
       return false;
     }
+    blobdata hashing_blob = get_block_hashing_blob(b);
     res.prev_hash = string_tools::pod_to_hex(b.prev_id);
     res.blocktemplate_blob = string_tools::buff_to_hex_nodelimer(block_blob);
+    res.blockhashing_blob =  string_tools::buff_to_hex_nodelimer(hashing_blob);
     res.status = CORE_RPC_STATUS_OK;
     return true;
   }
@@ -1035,6 +1053,38 @@ namespace cryptonote
     {
       res.status = "Failed to parse txid";
       return false;
+    }
+
+    res.status = CORE_RPC_STATUS_OK;
+    return true;
+  }
+  //------------------------------------------------------------------------------------------------------------------------------
+  bool core_rpc_server::on_get_output_histogram(const COMMAND_RPC_GET_OUTPUT_HISTOGRAM::request& req, COMMAND_RPC_GET_OUTPUT_HISTOGRAM::response& res, epee::json_rpc::error& error_resp)
+  {
+    if(!check_core_busy())
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_CORE_BUSY;
+      error_resp.message = "Core is busy.";
+      return false;
+    }
+
+    std::map<uint64_t, uint64_t> histogram;
+    try
+    {
+      histogram = m_core.get_blockchain_storage().get_output_histogram(req.amounts);
+    }
+    catch (const std::exception &e)
+    {
+      res.status = "Failed to get output histogram";
+      return true;
+    }
+
+    res.histogram.clear();
+    res.histogram.reserve(histogram.size());
+    for (const auto &i: histogram)
+    {
+      if (i.second >= req.min_count && (i.second <= req.max_count || req.max_count == 0))
+        res.histogram.push_back(COMMAND_RPC_GET_OUTPUT_HISTOGRAM::entry(i.first, i.second));
     }
 
     res.status = CORE_RPC_STATUS_OK;

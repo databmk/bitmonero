@@ -76,6 +76,7 @@ namespace tools
     //         daemon_busy
     //         no_connection_to_daemon
     //         is_key_image_spent_error
+    //         get_histogram_error
     //       wallet_files_doesnt_correspond
     //
     // * - class with protected ctor
@@ -457,15 +458,17 @@ namespace tools
     //----------------------------------------------------------------------------------------------------
     struct tx_rejected : public transfer_error
     {
-      explicit tx_rejected(std::string&& loc, const cryptonote::transaction& tx, const std::string& status)
+      explicit tx_rejected(std::string&& loc, const cryptonote::transaction& tx, const std::string& status, const std::string& reason)
         : transfer_error(std::move(loc), "transaction was rejected by daemon")
         , m_tx(tx)
         , m_status(status)
+        , m_reason(reason)
       {
       }
 
       const cryptonote::transaction& tx() const { return m_tx; }
       const std::string& status() const { return m_status; }
+      const std::string& reason() const { return m_reason; }
 
       std::string to_string() const
       {
@@ -473,12 +476,17 @@ namespace tools
         ss << transfer_error::to_string() << ", status = " << m_status << ", tx:\n";
         cryptonote::transaction tx = m_tx;
         ss << cryptonote::obj_to_json_str(tx);
+        if (!m_reason.empty())
+        {
+          ss << " (" << m_reason << ")";
+        }
         return ss.str();
       }
 
     private:
       cryptonote::transaction m_tx;
       std::string m_status;
+      std::string m_reason;
     };
     //----------------------------------------------------------------------------------------------------
     struct tx_sum_overflow : public transfer_error
@@ -596,6 +604,14 @@ namespace tools
     {
       explicit is_key_image_spent_error(std::string&& loc, const std::string& request)
         : wallet_rpc_error(std::move(loc), "error from is_key_image_spent call", request)
+      {
+      }
+    };
+    //----------------------------------------------------------------------------------------------------
+    struct get_histogram_error : public wallet_rpc_error
+    {
+      explicit get_histogram_error(std::string&& loc, const std::string& request)
+        : wallet_rpc_error(std::move(loc), "failed to get output histogram", request)
       {
       }
     };

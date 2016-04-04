@@ -234,9 +234,27 @@ namespace cryptonote
     struct response
     {
       std::string status;
+      std::string reason;
+      bool not_relayed;
+      bool low_mixin;
+      bool double_spend;
+      bool invalid_input;
+      bool invalid_output;
+      bool too_big;
+      bool overspend;
+      bool fee_too_low;
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(status)
+        KV_SERIALIZE(reason)
+        KV_SERIALIZE(not_relayed)
+        KV_SERIALIZE(low_mixin)
+        KV_SERIALIZE(double_spend)
+        KV_SERIALIZE(invalid_input)
+        KV_SERIALIZE(invalid_output)
+        KV_SERIALIZE(too_big)
+        KV_SERIALIZE(overspend)
+        KV_SERIALIZE(fee_too_low)
       END_KV_SERIALIZE_MAP()
     };
   };
@@ -427,6 +445,7 @@ namespace cryptonote
       uint64_t reserved_offset;
       std::string prev_hash;
       blobdata blocktemplate_blob;
+      blobdata blockhashing_blob;
       std::string status;
 
       BEGIN_KV_SERIALIZE_MAP()
@@ -435,6 +454,7 @@ namespace cryptonote
         KV_SERIALIZE(reserved_offset)
         KV_SERIALIZE(prev_hash)
         KV_SERIALIZE(blocktemplate_blob)
+        KV_SERIALIZE(blockhashing_blob)
         KV_SERIALIZE(status)
       END_KV_SERIALIZE_MAP()
     };
@@ -983,6 +1003,47 @@ namespace cryptonote
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(status)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
+  struct COMMAND_RPC_GET_OUTPUT_HISTOGRAM
+  {
+    struct request
+    {
+      std::vector<uint64_t> amounts;
+      uint64_t min_count;
+      uint64_t max_count;
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(amounts);
+        KV_SERIALIZE(min_count);
+        KV_SERIALIZE(max_count);
+      END_KV_SERIALIZE_MAP()
+    };
+
+    struct entry
+    {
+      uint64_t amount;
+      uint64_t instances;
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(amount);
+        KV_SERIALIZE(instances);
+      END_KV_SERIALIZE_MAP()
+
+      entry(uint64_t amount, uint64_t instances): amount(amount), instances(instances) {}
+      entry() {}
+    };
+
+    struct response
+    {
+      std::string status;
+      std::vector<entry> histogram;
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(status)
+        KV_SERIALIZE(histogram)
       END_KV_SERIALIZE_MAP()
     };
   };

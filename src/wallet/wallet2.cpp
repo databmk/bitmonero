@@ -52,6 +52,7 @@ using namespace epee;
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
 #include "rapidjson/stringbuffer.h"
+#include "common/json_util.h"
 
 extern "C"
 {
@@ -90,6 +91,13 @@ void do_prepare_file_names(const std::string& file_path, std::string& keys_file,
   {//provided wallet file name
     keys_file += ".keys";
   }
+}
+
+uint64_t calculate_fee(const cryptonote::blobdata &blob)
+{
+  uint64_t bytes = blob.size();
+  uint64_t kB = (bytes + 1023) / 1024;
+  return kB * FEE_PER_KB;
 }
 
 } //namespace
@@ -490,7 +498,7 @@ void wallet2::process_new_blockchain_entry(const cryptonote::block& b, const cry
   //handle transactions from new block
     
   //optimization: seeking only for blocks that are not older then the wallet creation time plus 1 day. 1 day is for possible user incorrect time setup
-  if(b.timestamp + 60*60*24 > m_account.get_createtime())
+  if(b.timestamp + 60*60*24 > m_account.get_createtime() && height >= m_refresh_from_block_height)
   {
     TIME_MEASURE_START(miner_tx_handle_time);
     process_new_transaction(b.miner_tx, height, true);
@@ -997,7 +1005,7 @@ namespace
  * \param keys_file_name Name of wallet file
  * \param password       Password of wallet file
  */
-void wallet2::load_keys(const std::string& keys_file_name, const std::string& password)
+bool wallet2::load_keys(const std::string& keys_file_name, const std::string& password)
 {
   wallet2::keys_file_data keys_file_data;
   std::string buf;
@@ -1026,34 +1034,44 @@ void wallet2::load_keys(const std::string& keys_file_name, const std::string& pa
   }
   else
   {
-    account_data = std::string(json["key_data"].GetString(), json["key_data"].GetString() +
-      json["key_data"].GetStringLength());
-    if (json.HasMember("seed_language"))
+    if (!json.HasMember("key_data"))
     {
-      set_seed_language(std::string(json["seed_language"].GetString(), json["seed_language"].GetString() +
-        json["seed_language"].GetStringLength()));
+      LOG_ERROR("Field key_data not found in JSON");
+      return false;
     }
-    if (json.HasMember("watch_only"))
+    if (!json["key_data"].IsString())
     {
-      m_watch_only = json["watch_only"].GetInt() != 0;
+      LOG_ERROR("Field key_data found in JSON, but not String");
+      return false;
     }
-    else
+    const char *field_key_data = json["key_data"].GetString();
+    account_data = std::string(field_key_data, field_key_data + json["key_data"].GetStringLength());
+
+    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, seed_language, std::string, String, false);
+    if (field_seed_language_found)
     {
-      m_watch_only = false;
+      set_seed_language(field_seed_language);
     }
-    m_always_confirm_transfers = json.HasMember("always_confirm_transfers") && (json["always_confirm_transfers"].GetInt() != 0);
-    m_store_tx_info = (json.HasMember("store_tx_keys") && (json["store_tx_keys"].GetInt() != 0))
-                   || (json.HasMember("store_tx_info") && (json["store_tx_info"].GetInt() != 0));
-    m_default_mixin = json.HasMember("default_mixin") ? json["default_mixin"].GetUint() : 0;
-    m_auto_refresh = !json.HasMember("auto_refresh") || (json["auto_refresh"].GetInt() != 0);
+    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, watch_only, int, Int, false);
+    m_watch_only = field_watch_only_found && field_watch_only;
+    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, always_confirm_transfers, int, Int, false);
+    m_always_confirm_transfers = field_always_confirm_transfers_found && field_always_confirm_transfers;
+    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, store_tx_keys, int, Int, false);
+    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, store_tx_info, int, Int, false);
+    m_store_tx_info = (field_store_tx_keys_found && (field_store_tx_keys != 0))
+                   || (field_store_tx_info_found && (field_store_tx_info != 0));
+    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, default_mixin, unsigned int, Uint, false);
+    m_default_mixin = field_default_mixin_found ? field_default_mixin : 0;
+    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, auto_refresh, int, Int, false);
+    m_auto_refresh = !field_auto_refresh_found || (field_auto_refresh != 0);
+    GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, refresh_type, int, Int, false);
     m_refresh_type = RefreshType::RefreshDefault;
-    if (json.HasMember("refresh_type"))
+    if (field_refresh_type_found)
     {
-      int type = json["refresh_type"].GetInt();
-      if (type == RefreshFull || type == RefreshOptimizeCoinbase || type == RefreshNoCoinbase)
-        m_refresh_type = (RefreshType)type;
+      if (field_refresh_type == RefreshFull || field_refresh_type == RefreshOptimizeCoinbase || field_refresh_type == RefreshNoCoinbase)
+        m_refresh_type = (RefreshType)field_refresh_type;
       else
-        LOG_PRINT_L0("Unknown refresh-type value (" << type << "), using default");
+        LOG_PRINT_L0("Unknown refresh-type value (" << field_refresh_type << "), using default");
     }
   }
 
@@ -1063,6 +1081,7 @@ void wallet2::load_keys(const std::string& keys_file_name, const std::string& pa
   if(!m_watch_only)
     r = r && verify_keys(keys.m_spend_secret_key, keys.m_account_address.m_spend_public_key);
   THROW_WALLET_EXCEPTION_IF(!r, error::invalid_password);
+  return true;
 }
 
 /*!
@@ -1207,7 +1226,7 @@ void wallet2::generate(const std::string& wallet_, const std::string& password,
   m_account_public_address = account_public_address;
   m_watch_only = false;
 
-  bool r = store_keys(m_keys_file, password, true);
+  bool r = store_keys(m_keys_file, password, false);
   THROW_WALLET_EXCEPTION_IF(!r, error::file_save_error, m_keys_file);
 
   r = file_io_utils::save_string_to_file(m_wallet_file + ".address.txt", m_account.get_public_address_str(m_testnet));
@@ -1351,7 +1370,10 @@ void wallet2::load(const std::string& wallet_, const std::string& password)
   bool exists = boost::filesystem::exists(m_keys_file, e);
   THROW_WALLET_EXCEPTION_IF(e || !exists, error::file_not_found, m_keys_file);
 
-  load_keys(m_keys_file, password);
+  if (!load_keys(m_keys_file, password))
+  {
+    THROW_WALLET_EXCEPTION_IF(true, error::file_read_error, m_keys_file);
+  }
   LOG_PRINT_L0("Loaded wallet keys file, with public address: " << m_account.get_public_address_str(m_testnet));
 
   //keys loaded ok!
@@ -1958,7 +1980,7 @@ void wallet2::commit_tx(pending_tx& ptx)
   m_daemon_rpc_mutex.unlock();
   THROW_WALLET_EXCEPTION_IF(!r, error::no_connection_to_daemon, "sendrawtransaction");
   THROW_WALLET_EXCEPTION_IF(daemon_send_resp.status == CORE_RPC_STATUS_BUSY, error::daemon_busy, "sendrawtransaction");
-  THROW_WALLET_EXCEPTION_IF(daemon_send_resp.status != CORE_RPC_STATUS_OK, error::tx_rejected, ptx.tx, daemon_send_resp.status);
+  THROW_WALLET_EXCEPTION_IF(daemon_send_resp.status != CORE_RPC_STATUS_OK, error::tx_rejected, ptx.tx, daemon_send_resp.status, daemon_send_resp.reason);
 
   txid = get_transaction_hash(ptx.tx);
   crypto::hash payment_id = cryptonote::null_hash;
@@ -2030,13 +2052,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions(std::vector<crypto
 	{
 	  transfer(dst_vector, fake_outs_count, unlock_time, needed_fee, extra, tx, ptx);
 	  auto txBlob = t_serializable_object_to_blob(ptx.tx);
-	  uint64_t txSize = txBlob.size();
-	  uint64_t numKB = txSize / 1024;
-	  if (txSize % 1024)
-	  {
-	    numKB++;
-	  }
-	  needed_fee = numKB * FEE_PER_KB;
+          needed_fee = calculate_fee(txBlob);
 	} while (ptx.fee < needed_fee);
 
         ptx_vector.push_back(ptx);
@@ -2408,15 +2424,9 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
       transfer_selected(tx.dsts, tx.selected_transfers, fake_outs_count, unlock_time, needed_fee, extra,
         detail::digit_split_strategy, tx_dust_policy(::config::DEFAULT_DUST_THRESHOLD), test_tx, test_ptx);
       auto txBlob = t_serializable_object_to_blob(test_ptx.tx);
-      uint64_t txSize = txBlob.size();
-      uint64_t numKB = txSize / 1024;
-      if (txSize % 1024)
-      {
-        numKB++;
-      }
-      needed_fee = numKB * FEE_PER_KB;
+      needed_fee = calculate_fee(txBlob);
       available_for_fee = test_ptx.fee + test_ptx.change_dts.amount;
-      LOG_PRINT_L2("Made a " << numKB << " kB tx, with " << print_money(available_for_fee) << " available for fee (" <<
+      LOG_PRINT_L2("Made a " << txBlob.size() << " kB tx, with " << print_money(available_for_fee) << " available for fee (" <<
         print_money(needed_fee) << " needed)");
 
       if (needed_fee > available_for_fee && dsts[0].amount > 0)
@@ -2513,7 +2523,7 @@ uint64_t wallet2::unlocked_dust_balance(const tx_dust_policy &dust_policy) const
 }
 
 template<typename T>
-void wallet2::transfer_dust(size_t num_outputs, uint64_t unlock_time, uint64_t needed_fee, T destination_split_strategy, const tx_dust_policy& dust_policy, const std::vector<uint8_t> &extra, cryptonote::transaction& tx, pending_tx &ptx)
+void wallet2::transfer_from(const std::vector<size_t> &outs, size_t num_outputs, uint64_t unlock_time, uint64_t needed_fee, T destination_split_strategy, const tx_dust_policy& dust_policy, const std::vector<uint8_t> &extra, cryptonote::transaction& tx, pending_tx &ptx)
 {
   using namespace cryptonote;
 
@@ -2523,6 +2533,19 @@ void wallet2::transfer_dust(size_t num_outputs, uint64_t unlock_time, uint64_t n
   // throw if there are none
   uint64_t money = 0;
   std::list<transfer_container::iterator> selected_transfers;
+#if 1
+  for (size_t n = 0; n < outs.size(); ++n)
+  {
+    const transfer_details& td = m_transfers[outs[n]];
+    if (!td.m_spent)
+    {
+      selected_transfers.push_back (m_transfers.begin() + outs[n]);
+      money += td.amount();
+      if (selected_transfers.size() >= num_outputs)
+        break;
+    }
+  }
+#else
   for (transfer_container::iterator i = m_transfers.begin(); i != m_transfers.end(); ++i)
   {
     const transfer_details& td = *i;
@@ -2534,6 +2557,7 @@ void wallet2::transfer_dust(size_t num_outputs, uint64_t unlock_time, uint64_t n
         break;
     }
   }
+#endif
 
   // we don't allow no output to self, easier, but one may want to burn the dust if = fee
   THROW_WALLET_EXCEPTION_IF(money <= needed_fee, error::not_enough_money, money, needed_fee, needed_fee);
@@ -2627,8 +2651,8 @@ bool wallet2::use_fork_rules(uint8_t version)
   r = net_utils::invoke_http_json_remote_command2(m_daemon_address + "/json_rpc", req_t, resp_t, m_http_client);
   m_daemon_rpc_mutex.unlock();
   CHECK_AND_ASSERT_MES(r, false, "Failed to connect to daemon");
-  CHECK_AND_ASSERT_MES(res.status != CORE_RPC_STATUS_BUSY, false, "Failed to connect to daemon");
-  CHECK_AND_ASSERT_MES(res.status == CORE_RPC_STATUS_OK, false, "Failed to get hard fork status");
+  CHECK_AND_ASSERT_MES(resp_t.result.status != CORE_RPC_STATUS_BUSY, false, "Failed to connect to daemon");
+  CHECK_AND_ASSERT_MES(resp_t.result.status == CORE_RPC_STATUS_OK, false, "Failed to get hard fork status");
 
   bool close_enough = res.height >=  resp_t.result.earliest_height - 10; // start using the rules a bit beforehand
   if (close_enough)
@@ -2646,20 +2670,85 @@ uint64_t wallet2::get_upper_tranaction_size_limit()
   return ((full_reward_zone * 125) / 100) - CRYPTONOTE_COINBASE_BLOB_RESERVED_SIZE;
 }
 //----------------------------------------------------------------------------------------------------
-std::vector<wallet2::pending_tx> wallet2::create_dust_sweep_transactions()
+std::vector<size_t> wallet2::select_available_outputs(const std::function<bool(const transfer_details &td)> &f)
+{
+  std::vector<size_t> outputs;
+  size_t n = 0;
+  for (transfer_container::const_iterator i = m_transfers.begin(); i != m_transfers.end(); ++i, ++n)
+  {
+    if (i->m_spent)
+      continue;
+    if (!is_transfer_unlocked(*i))
+      continue;
+    if (f(*i))
+      outputs.push_back(n);
+  }
+  return outputs;
+}
+//----------------------------------------------------------------------------------------------------
+std::vector<uint64_t> wallet2::get_unspent_amounts_vector()
+{
+  std::set<uint64_t> set;
+  for (const auto &td: m_transfers)
+  {
+    if (!td.m_spent)
+      set.insert(td.amount());
+  }
+  std::vector<uint64_t> vector;
+  vector.reserve(set.size());
+  for (const auto &i: set)
+  {
+    vector.push_back(i);
+  }
+  return vector;
+}
+//----------------------------------------------------------------------------------------------------
+std::vector<size_t> wallet2::select_available_unmixable_outputs(bool trusted_daemon)
+{
+  // request all outputs with at least 3 instances, so we can use mixin 2 with
+  epee::json_rpc::request<cryptonote::COMMAND_RPC_GET_OUTPUT_HISTOGRAM::request> req_t = AUTO_VAL_INIT(req_t);
+  epee::json_rpc::response<cryptonote::COMMAND_RPC_GET_OUTPUT_HISTOGRAM::response, std::string> resp_t = AUTO_VAL_INIT(resp_t);
+  m_daemon_rpc_mutex.lock();
+  req_t.jsonrpc = "2.0";
+  req_t.id = epee::serialization::storage_entry(0);
+  req_t.method = "get_output_histogram";
+  if (trusted_daemon)
+    req_t.params.amounts = get_unspent_amounts_vector();
+  req_t.params.min_count = 3;
+  req_t.params.max_count = 0;
+  bool r = net_utils::invoke_http_json_remote_command2(m_daemon_address + "/json_rpc", req_t, resp_t, m_http_client);
+  m_daemon_rpc_mutex.unlock();
+  THROW_WALLET_EXCEPTION_IF(!r, error::no_connection_to_daemon, "select_available_unmixable_outputs");
+  THROW_WALLET_EXCEPTION_IF(resp_t.result.status == CORE_RPC_STATUS_BUSY, error::daemon_busy, "get_output_histogram");
+  THROW_WALLET_EXCEPTION_IF(resp_t.result.status != CORE_RPC_STATUS_OK, error::get_histogram_error, resp_t.result.status);
+
+  std::set<uint64_t> mixable;
+  for (const auto &i: resp_t.result.histogram)
+  {
+    mixable.insert(i.amount);
+  }
+
+  return select_available_outputs([mixable](const transfer_details &td) {
+    const uint64_t amount = td.amount();
+    if (mixable.find(amount) == mixable.end())
+      return true;
+    return false;
+  });
+}
+//----------------------------------------------------------------------------------------------------
+std::vector<wallet2::pending_tx> wallet2::create_unmixable_sweep_transactions(bool trusted_daemon)
 {
   // From hard fork 1, we don't consider small amounts to be dust anymore
   const bool hf1_rules = use_fork_rules(2); // first hard fork has version 2
   tx_dust_policy dust_policy(hf1_rules ? 0 : ::config::DEFAULT_DUST_THRESHOLD);
 
-  size_t num_dust_outputs = 0;
-  for (transfer_container::const_iterator i = m_transfers.begin(); i != m_transfers.end(); ++i)
+  // may throw
+  std::vector<size_t> unmixable_outputs = select_available_unmixable_outputs(trusted_daemon);
+  size_t num_dust_outputs = unmixable_outputs.size();
+
+  if (num_dust_outputs == 0)
   {
-    const transfer_details& td = *i;
-    if (!td.m_spent && (td.amount() < dust_policy.dust_threshold || !is_valid_decomposed_amount(td.amount())) && is_transfer_unlocked(td))
-    {
-      num_dust_outputs++;
-    }
+    return std::vector<wallet2::pending_tx>();
   }
 
   // failsafe split attempt counter
@@ -2682,23 +2771,18 @@ std::vector<wallet2::pending_tx> wallet2::create_dust_sweep_transactions()
 
 	// loop until fee is met without increasing tx size to next KB boundary.
 	uint64_t needed_fee = 0;
-	if (1)
+	do
 	{
-	  transfer_dust(num_outputs_per_tx, (uint64_t)0 /* unlock_time */, 0, detail::digit_split_strategy, dust_policy, extra, tx, ptx);
+	  transfer_from(unmixable_outputs, num_outputs_per_tx, (uint64_t)0 /* unlock_time */, 0, detail::digit_split_strategy, dust_policy, extra, tx, ptx);
 	  auto txBlob = t_serializable_object_to_blob(ptx.tx);
-	  uint64_t txSize = txBlob.size();
-	  uint64_t numKB = txSize / 1024;
-	  if (txSize % 1024)
-	  {
-	    numKB++;
-	  }
-	  needed_fee = numKB * FEE_PER_KB;
+          needed_fee = calculate_fee(txBlob);
 
           // reroll the tx with the actual amount minus the fee
           // if there's not enough for the fee, it'll throw
-	  transfer_dust(num_outputs_per_tx, (uint64_t)0 /* unlock_time */, needed_fee, detail::digit_split_strategy, dust_policy, extra, tx, ptx);
+	  transfer_from(unmixable_outputs, num_outputs_per_tx, (uint64_t)0 /* unlock_time */, needed_fee, detail::digit_split_strategy, dust_policy, extra, tx, ptx);
 	  txBlob = t_serializable_object_to_blob(ptx.tx);
-	}
+          needed_fee = calculate_fee(txBlob);
+	} while (ptx.fee < needed_fee);
 
         ptx_vector.push_back(ptx);
 

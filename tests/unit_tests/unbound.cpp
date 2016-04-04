@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2016, The Monero Project
+// Copyright (c) 2016, The Monero Project
 // 
 // All rights reserved.
 // 
@@ -25,24 +25,25 @@
 // INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
 // STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// 
+//
 // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 
-#pragma once
+#include "gtest/gtest.h"
 
-#include "checkpoints.h"
-#include "misc_log_ex.h"
+extern "C" int dnskey_algo_id_is_supported(int);
 
-#define ADD_CHECKPOINT(h, hash)  CHECK_AND_ASSERT(checkpoints.add_checkpoint(h,  hash), false);
-#define JSON_HASH_FILE_NAME "checkpoints.json"
-
-namespace cryptonote
+TEST(unbound, supported_algorithms)
 {
+  // Monero causes these to be tried, but we don't have access
+  // to this internal unbound header here, so we use raw numbers
+  // LDNS_RSASHA1            = 5,
+  // LDNS_RSASHA1_NSEC3      = 7,
+  // LDNS_RSASHA256          = 8,   /* RFC 5702 */
+  // LDNS_ECDSAP256SHA256    = 13,  /* RFC 6605 */
 
-  bool create_checkpoints(cryptonote::checkpoints& checkpoints);
+  ASSERT_TRUE(dnskey_algo_id_is_supported(5));
+  ASSERT_TRUE(dnskey_algo_id_is_supported(7));
+  ASSERT_TRUE(dnskey_algo_id_is_supported(8));
+  ASSERT_TRUE(dnskey_algo_id_is_supported(13));
+}
 
-  bool load_checkpoints_from_json(cryptonote::checkpoints& checkpoints, std::string json_hashfile_fullpath);
-  bool load_checkpoints_from_dns(cryptonote::checkpoints& checkpoints, bool testnet = false);
-  bool load_new_checkpoints(cryptonote::checkpoints& checkpoints, std::string json_hashfile_fullpath);
-
-}  // namespace cryptonote

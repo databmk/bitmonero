@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2016, The Monero Project
+// Copyright (c) 2016, The Monero Project
 // 
 // All rights reserved.
 // 
@@ -25,32 +25,29 @@
 // INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
 // STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// 
-// Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 
-#pragma once
+#pragma once 
 
-#include <cstdint>
-#include <vector>
+#define GET_FIELD_FROM_JSON_RETURN_ON_ERROR(json, name, type, jtype, mandatory) \
+  type field_##name; \
+  bool field_##name##_found = false; \
+  (void)field_##name##_found; \
+  do if (json.HasMember(#name)) \
+  { \
+    if (json[#name].Is##jtype()) \
+    { \
+      field_##name = json[#name].Get##jtype(); \
+      field_##name##_found = true; \
+    } \
+    else \
+    { \
+      LOG_ERROR("Field " << #name << " found in JSON, but not " << #jtype); \
+      return false; \
+    } \
+  } \
+  else if (mandatory) \
+  { \
+    LOG_ERROR("Field " << #name << " not found in JSON"); \
+    return false; \
+  } while(0)
 
-#include "crypto/hash.h"
-
-namespace cryptonote
-{
-    typedef std::uint64_t difficulty_type;
-
-    /**
-     * @brief checks if a hash fits the given difficulty
-     *
-     * The hash passes if (hash * difficulty) < 2^192.
-     * Phrased differently, if (hash * difficulty) fits without overflow into
-     * the least significant 192 bits of the 256 bit multiplication result.
-     *
-     * @param hash the hash to check
-     * @param difficulty the difficulty to check against
-     *
-     * @return true if valid, else false
-     */
-    bool check_hash(const crypto::hash &hash, difficulty_type difficulty);
-    difficulty_type next_difficulty(std::vector<std::uint64_t> timestamps, std::vector<difficulty_type> cumulative_difficulties, size_t target_seconds);
-}
