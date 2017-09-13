@@ -96,6 +96,10 @@ function (monero_add_library name)
     PRIVATE $<TARGET_PROPERTY:${name},INTERFACE_COMPILE_DEFINITIONS>)
 endfunction ()
 
+include(../version.cmake)
+set_source_files_properties(${CMAKE_BINARY_DIR}/version.cpp PROPERTIES GENERATED ON)
+monero_add_library(version ${CMAKE_BINARY_DIR}/version.cpp)
+
 add_subdirectory(common)
 add_subdirectory(crypto)
 add_subdirectory(ringct)

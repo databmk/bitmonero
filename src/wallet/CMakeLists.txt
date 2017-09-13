@@ -110,6 +110,7 @@ if (NOT BUILD_GUI_DEPS)
       cryptonote_core
       cncrypto
       common
+      version
       ${Boost_CHRONO_LIBRARY}
       ${Boost_PROGRAM_OPTIONS_LIBRARY}
       ${Boost_FILESYSTEM_LIBRARY}

@@ -77,6 +77,7 @@ target_link_libraries(blockchain_import
     cryptonote_core
     blockchain_db
     p2p
+    version
     epee
     ${Boost_FILESYSTEM_LIBRARY}
     ${Boost_SYSTEM_LIBRARY}
@@ -104,6 +105,7 @@ target_link_libraries(blockchain_export
     cryptonote_core
     blockchain_db
     p2p
+    version
     epee
     ${Boost_FILESYSTEM_LIBRARY}
     ${Boost_SYSTEM_LIBRARY}
