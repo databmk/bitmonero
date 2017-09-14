@@ -715,7 +715,6 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
           // process the other outs from that tx
           tools::threadpool& tpool = tools::threadpool::getInstance();
           tools::threadpool::waitobj wobj;
-          wobj.num = 0;
 
           std::vector<uint64_t> money_transfered(tx.vout.size());
           std::deque<bool> error(tx.vout.size());
@@ -757,7 +756,6 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
     {
       tools::threadpool& tpool = tools::threadpool::getInstance();
       tools::threadpool::waitobj wobj;
-      wobj.num = 0;
 
       std::vector<uint64_t> money_transfered(tx.vout.size());
       std::deque<bool> error(tx.vout.size());
@@ -1250,7 +1248,6 @@ void wallet2::process_blocks(uint64_t start_height, const std::list<cryptonote::
 
       tools::threadpool& tpool = tools::threadpool::getInstance();
       tools::threadpool::waitobj wobj;
-      wobj.num = 0;
 
       std::list<block_complete_entry>::const_iterator tmpblocki = blocki;
       for (size_t i = 0; i < round_size; ++i)
@@ -1681,7 +1678,6 @@ void wallet2::refresh(uint64_t start_height, uint64_t & blocks_fetched, bool& re
   std::list<crypto::hash> short_chain_history;
   tools::threadpool& tpool = tools::threadpool::getInstance();
   tools::threadpool::waitobj wobj;
-  wobj.num = 0;
   uint64_t blocks_start_height;
   std::list<cryptonote::block_complete_entry> blocks;
   std::vector<COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> o_indices;
@@ -1745,6 +1741,7 @@ void wallet2::refresh(uint64_t start_height, uint64_t & blocks_fetched, bool& re
     catch (const std::exception&)
     {
       blocks_fetched += added_blocks;
+      tpool.wait(&wobj);
       if(try_count < 3)
       {
         LOG_PRINT_L1("Another try pull_blocks (try_count=" << try_count << ")...");

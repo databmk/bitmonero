@@ -2506,7 +2506,6 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
   int threads = tools::get_max_concurrency();
   tools::threadpool& tpool = tools::threadpool::getInstance();
   tools::threadpool::waitobj wobj;
-  wobj.num = 0;
 
   for (const auto& txin : tx.vin)
   {
@@ -3742,7 +3741,6 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::list<block_complete_e
       uint64_t thread_height = height;
       tools::threadpool& tpool = tools::threadpool::getInstance();
       tools::threadpool::waitobj wobj;
-      wobj.num = 0;
       for (uint64_t i = 0; i < threads; i++)
       {
         tpool.submit(&wobj, boost::bind(&Blockchain::block_longhash_worker, this, thread_height, std::cref(blocks[i]), std::ref(maps[i])));
@@ -3881,7 +3879,6 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::list<block_complete_e
   {
     tools::threadpool& tpool = tools::threadpool::getInstance();
     tools::threadpool::waitobj wobj;
-    wobj.num = 0;
 
     for (size_t i = 0; i < amounts.size(); i++)
     {

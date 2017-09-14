@@ -47,12 +47,12 @@ public:
   }
 
   // The waitobj lets the caller know when all of its
-  // tasks are completed. The caller must initialize num
-  // to zero before using it.
+  // tasks are completed.
   typedef struct waitobj {
     boost::mutex mt;
     boost::condition_variable cv;
     int num;
+    waitobj() : num(0){}
   } waitobj;
 
   // Submit a task to the pool. The obj pointer may be

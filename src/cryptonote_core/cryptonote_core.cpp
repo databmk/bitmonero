@@ -590,7 +590,6 @@ namespace cryptonote
 
     tvc.resize(tx_blobs.size());
     tools::threadpool::waitobj wobj;
-    wobj.num = 0;
     std::list<blobdata>::const_iterator it = tx_blobs.begin();
     for (size_t i = 0; i < tx_blobs.size(); i++, ++it) {
       m_threadpool.submit(&wobj, [&, i, it] {

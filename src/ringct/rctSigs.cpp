@@ -732,7 +732,6 @@ namespace rct {
           if (semantics) {
             tools::threadpool& tpool = tools::threadpool::getInstance();
             tools::threadpool::waitobj wobj;
-            wobj.num = 0;
             std::deque<bool> results(rv.outPk.size(), false);
             DP("range proofs verified?");
             for (size_t i = 0; i < rv.outPk.size(); i++) {
@@ -795,7 +794,6 @@ namespace rct {
         std::deque<bool> results(threads);
         tools::threadpool& tpool = tools::threadpool::getInstance();
         tools::threadpool::waitobj wobj;
-        wobj.num = 0;
 
         if (semantics) {
           key sumOutpks = identity();
