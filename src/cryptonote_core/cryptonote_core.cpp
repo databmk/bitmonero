@@ -589,14 +589,14 @@ namespace cryptonote
     std::vector<result> results(tx_blobs.size());
 
     tvc.resize(tx_blobs.size());
-    tools::threadpool::waitobj wobj;
+    tools::threadpool::waiter waiter;
     std::list<blobdata>::const_iterator it = tx_blobs.begin();
     for (size_t i = 0; i < tx_blobs.size(); i++, ++it) {
-      m_threadpool.submit(&wobj, [&, i, it] {
+      m_threadpool.submit(&waiter, [&, i, it] {
         results[i].res = handle_incoming_tx_pre(*it, tvc[i], results[i].tx, results[i].hash, results[i].prefix_hash, keeped_by_block, relayed, do_not_relay);
       });
     }
-    m_threadpool.wait(&wobj);
+    waiter.wait();
     it = tx_blobs.begin();
     for (size_t i = 0; i < tx_blobs.size(); i++, ++it) {
       if (!results[i].res)
@@ -611,12 +611,12 @@ namespace cryptonote
       }
       else
       {
-        m_threadpool.submit(&wobj, [&, i, it] {
+        m_threadpool.submit(&waiter, [&, i, it] {
             results[i].res = handle_incoming_tx_post(*it, tvc[i], results[i].tx, results[i].hash, results[i].prefix_hash, keeped_by_block, relayed, do_not_relay);
         });
       }
     }
-    m_threadpool.wait(&wobj);
+    waiter.wait();
 
     bool ok = true;
     it = tx_blobs.begin();

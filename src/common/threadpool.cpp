@@ -58,7 +58,7 @@ threadpool::~threadpool() {
   }
 }
 
-void threadpool::submit(waitobj *obj, std::function<void()> f) {
+void threadpool::submit(waiter *obj, std::function<void()> f) {
   entry e = {obj, f};
   boost::unique_lock<boost::mutex> lock(mutex);
   if (active == max && !queue.empty()) {
@@ -67,42 +67,46 @@ void threadpool::submit(waitobj *obj, std::function<void()> f) {
     lock.unlock();
     f();
   } else {
-    if (obj) {
-      boost::unique_lock<boost::mutex> lock(obj->mt);
-      obj->num++;
-    }
+    if (obj)
+      obj->inc();
     queue.push_back(e);
     has_work.notify_one();
   }
 }
 
-void threadpool::wait(waitobj *obj) {
-  boost::unique_lock<boost::mutex> lock(obj->mt);
-  while(obj->num) obj->cv.wait(lock);
+void threadpool::waiter::wait() {
+  boost::unique_lock<boost::mutex> lock(mt);
+  while(num) cv.wait(lock);
+}
+
+void threadpool::waiter::inc() {
+  const boost::unique_lock<boost::mutex> lock(mt);
+  num++;
+}
+
+void threadpool::waiter::dec() {
+  const boost::unique_lock<boost::mutex> lock(mt);
+  num--;
+  if (!num)
+    cv.notify_one();
 }
 
 void threadpool::run() {
   boost::unique_lock<boost::mutex> lock(mutex);
   while (running) {
     entry e;
-    {
-      while(queue.empty()) {
-        if (!running) return;
-        has_work.wait(lock);
-      }
-      active++;
-      e = queue.front();
-      queue.pop_front();
-      lock.unlock();
-    }
+    while(queue.empty() && running)
+      has_work.wait(lock);
+    if (!running) break;
+
+    active++;
+    e = queue.front();
+    queue.pop_front();
+    lock.unlock();
     e.f();
+
     if (e.wo)
-    {
-      boost::unique_lock<boost::mutex> lock2(e.wo->mt);
-      e.wo->num--;
-      if (!e.wo->num)
-        e.wo->cv.notify_one();
-    }
+      e.wo->dec();
     lock.lock();
     active--;
   }

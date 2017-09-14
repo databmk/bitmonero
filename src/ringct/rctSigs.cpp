@@ -731,15 +731,15 @@ namespace rct {
         {
           if (semantics) {
             tools::threadpool& tpool = tools::threadpool::getInstance();
-            tools::threadpool::waitobj wobj;
+            tools::threadpool::waiter waiter;
             std::deque<bool> results(rv.outPk.size(), false);
             DP("range proofs verified?");
             for (size_t i = 0; i < rv.outPk.size(); i++) {
-              tpool.submit(&wobj, [&, i] {
+              tpool.submit(&waiter, [&, i] {
                 results[i] = verRange(rv.outPk[i].mask, rv.p.rangeSigs[i]);
               });
             }
-            tpool.wait(&wobj);
+            waiter.wait();
 
             for (size_t i = 0; i < rv.outPk.size(); ++i) {
               if (!results[i]) {
@@ -793,7 +793,7 @@ namespace rct {
 
         std::deque<bool> results(threads);
         tools::threadpool& tpool = tools::threadpool::getInstance();
-        tools::threadpool::waitobj wobj;
+        tools::threadpool::waiter waiter;
 
         if (semantics) {
           key sumOutpks = identity();
@@ -819,11 +819,11 @@ namespace rct {
           results.clear();
           results.resize(rv.outPk.size());
           for (size_t i = 0; i < rv.outPk.size(); i++) {
-            tpool.submit(&wobj, [&, i] {
+            tpool.submit(&waiter, [&, i] {
               results[i] = verRange(rv.outPk[i].mask, rv.p.rangeSigs[i]);
             });
           }
-          tpool.wait(&wobj);
+          waiter.wait();
 
           for (size_t i = 0; i < results.size(); ++i) {
             if (!results[i]) {
@@ -838,11 +838,11 @@ namespace rct {
           results.clear();
           results.resize(rv.mixRing.size());
           for (size_t i = 0 ; i < rv.mixRing.size() ; i++) {
-            tpool.submit(&wobj, [&, i] {
+            tpool.submit(&waiter, [&, i] {
                 results[i] = verRctMGSimple(message, rv.p.MGs[i], rv.mixRing[i], rv.pseudoOuts[i]);
             });
           }
-          tpool.wait(&wobj);
+          waiter.wait();
 
           for (size_t i = 0; i < results.size(); ++i) {
             if (!results[i]) {

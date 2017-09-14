@@ -677,7 +677,9 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
     std::deque<crypto::key_image> ki(tx.vout.size());
     std::deque<uint64_t> amount(tx.vout.size());
     std::deque<rct::key> mask(tx.vout.size());
-    int threads = tools::get_max_concurrency();
+    tools::threadpool& tpool = tools::threadpool::getInstance();
+    tools::threadpool::waiter waiter;
+    int threads = tpool.get_max_concurrency();
     const cryptonote::account_keys& keys = m_account.get_keys();
     crypto::key_derivation derivation;
     generate_key_derivation(tx_pub_key, keys.m_view_secret_key, derivation);
@@ -713,8 +715,6 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
           ++num_vouts_received;
 
           // process the other outs from that tx
-          tools::threadpool& tpool = tools::threadpool::getInstance();
-          tools::threadpool::waitobj wobj;
 
           std::vector<uint64_t> money_transfered(tx.vout.size());
           std::deque<bool> error(tx.vout.size());
@@ -722,10 +722,10 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
           // the first one was already checked
           for (size_t i = 1; i < tx.vout.size(); ++i)
           {
-            tpool.submit(&wobj, boost::bind(&wallet2::check_acc_out_precomp, this, std::cref(keys.m_account_address.m_spend_public_key), std::cref(tx.vout[i]), std::cref(derivation), i,
+            tpool.submit(&waiter, boost::bind(&wallet2::check_acc_out_precomp, this, std::cref(keys.m_account_address.m_spend_public_key), std::cref(tx.vout[i]), std::cref(derivation), i,
               std::ref(received[i]), std::ref(money_transfered[i]), std::ref(error[i])));
           }
-          tpool.wait(&wobj);
+          waiter.wait();
           for (size_t i = 1; i < tx.vout.size(); ++i)
           {
             if (error[i])
@@ -755,17 +755,17 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
     else if (tx.vout.size() > 1 && threads > 1)
     {
       tools::threadpool& tpool = tools::threadpool::getInstance();
-      tools::threadpool::waitobj wobj;
+      tools::threadpool::waiter waiter;
 
       std::vector<uint64_t> money_transfered(tx.vout.size());
       std::deque<bool> error(tx.vout.size());
       std::deque<bool> received(tx.vout.size());
       for (size_t i = 0; i < tx.vout.size(); ++i)
       {
-        tpool.submit(&wobj, boost::bind(&wallet2::check_acc_out_precomp, this, std::cref(keys.m_account_address.m_spend_public_key), std::cref(tx.vout[i]), std::cref(derivation), i,
+        tpool.submit(&waiter, boost::bind(&wallet2::check_acc_out_precomp, this, std::cref(keys.m_account_address.m_spend_public_key), std::cref(tx.vout[i]), std::cref(derivation), i,
           std::ref(received[i]), std::ref(money_transfered[i]), std::ref(error[i])));
       }
-      tpool.wait(&wobj);
+      waiter.wait();
       tx_money_got_in_outs = 0;
       for (size_t i = 0; i < tx.vout.size(); ++i)
       {
@@ -1234,7 +1234,8 @@ void wallet2::process_blocks(uint64_t start_height, const std::list<cryptonote::
 
   THROW_WALLET_EXCEPTION_IF(blocks.size() != o_indices.size(), error::wallet_internal_error, "size mismatch");
 
-  int threads = tools::get_max_concurrency();
+  tools::threadpool& tpool = tools::threadpool::getInstance();
+  int threads = tpool.get_max_concurrency();
   if (threads > 1)
   {
     std::vector<crypto::hash> round_block_hashes(threads);
@@ -1245,18 +1246,16 @@ void wallet2::process_blocks(uint64_t start_height, const std::list<cryptonote::
     for (size_t b = 0; b < blocks_size; b += threads)
     {
       size_t round_size = std::min((size_t)threads, blocks_size - b);
-
-      tools::threadpool& tpool = tools::threadpool::getInstance();
-      tools::threadpool::waitobj wobj;
+      tools::threadpool::waiter waiter;
 
       std::list<block_complete_entry>::const_iterator tmpblocki = blocki;
       for (size_t i = 0; i < round_size; ++i)
       {
-        tpool.submit(&wobj, boost::bind(&wallet2::parse_block_round, this, std::cref(tmpblocki->block),
+        tpool.submit(&waiter, boost::bind(&wallet2::parse_block_round, this, std::cref(tmpblocki->block),
           std::ref(round_blocks[i]), std::ref(round_block_hashes[i]), std::ref(error[i])));
         ++tmpblocki;
       }
-      tpool.wait(&wobj);
+      waiter.wait();
       tmpblocki = blocki;
       for (size_t i = 0; i < round_size; ++i)
       {
@@ -1677,7 +1676,7 @@ void wallet2::refresh(uint64_t start_height, uint64_t & blocks_fetched, bool& re
   crypto::hash last_tx_hash_id = m_transfers.size() ? m_transfers.back().m_txid : null_hash;
   std::list<crypto::hash> short_chain_history;
   tools::threadpool& tpool = tools::threadpool::getInstance();
-  tools::threadpool::waitobj wobj;
+  tools::threadpool::waiter waiter;
   uint64_t blocks_start_height;
   std::list<cryptonote::block_complete_entry> blocks;
   std::vector<COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> o_indices;
@@ -1715,11 +1714,11 @@ void wallet2::refresh(uint64_t start_height, uint64_t & blocks_fetched, bool& re
       std::list<cryptonote::block_complete_entry> next_blocks;
       std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> next_o_indices;
       bool error = false;
-      tpool.submit(&wobj, [&]{pull_next_blocks(start_height, next_blocks_start_height, short_chain_history, blocks, next_blocks, next_o_indices, error);});
+      tpool.submit(&waiter, [&]{pull_next_blocks(start_height, next_blocks_start_height, short_chain_history, blocks, next_blocks, next_o_indices, error);});
 
       process_blocks(blocks_start_height, blocks, o_indices, added_blocks);
       blocks_fetched += added_blocks;
-      tpool.wait(&wobj);
+      waiter.wait();
       if(blocks_start_height == next_blocks_start_height)
       {
         m_node_rpc_proxy.set_height(m_blockchain.size());
@@ -1741,7 +1740,7 @@ void wallet2::refresh(uint64_t start_height, uint64_t & blocks_fetched, bool& re
     catch (const std::exception&)
     {
       blocks_fetched += added_blocks;
-      tpool.wait(&wobj);
+      waiter.wait();
       if(try_count < 3)
       {
         LOG_PRINT_L1("Another try pull_blocks (try_count=" << try_count << ")...");

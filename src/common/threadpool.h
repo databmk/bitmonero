@@ -46,28 +46,32 @@ public:
     return instance;
   }
 
-  // The waitobj lets the caller know when all of its
+  // The waiter lets the caller know when all of its
   // tasks are completed.
-  typedef struct waitobj {
+  class waiter {
     boost::mutex mt;
     boost::condition_variable cv;
     int num;
-    waitobj() : num(0){}
-  } waitobj;
+    public:
+    void inc();
+    void dec();
+    void wait();  //! Wait for a set of tasks to finish.
+    waiter() : num(0){}
+    ~waiter() { wait(); }
+  };
 
-  // Submit a task to the pool. The obj pointer may be
+  // Submit a task to the pool. The waiter pointer may be
   // NULL if the caller doesn't care to wait for the
   // task to finish.
-  void submit(waitobj *obj, std::function<void()> f);
+  void submit(waiter *waiter, std::function<void()> f);
 
-  // Wait for a set of tasks to finish.
-  void wait(waitobj *obj);
+  int get_max_concurrency() { return max; }
 
   private:
     threadpool();
     ~threadpool();
     typedef struct entry {
-      waitobj *wo;
+      waiter *wo;
       std::function<void()> f;
     } entry;
     std::deque<entry> queue;

@@ -2503,9 +2503,9 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
   std::vector < uint64_t > results;
   results.resize(tx.vin.size(), 0);
 
-  int threads = tools::get_max_concurrency();
   tools::threadpool& tpool = tools::threadpool::getInstance();
-  tools::threadpool::waitobj wobj;
+  tools::threadpool::waiter waiter;
+  int threads = tpool.get_max_concurrency();
 
   for (const auto& txin : tx.vin)
   {
@@ -2566,7 +2566,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
       {
         // ND: Speedup
         // 1. Thread ring signature verification if possible.
-        tpool.submit(&wobj, boost::bind(&Blockchain::check_ring_signature, this, std::cref(tx_prefix_hash), std::cref(in_to_key.k_image), std::cref(pubkeys[sig_index]), std::cref(tx.signatures[sig_index]), std::ref(results[sig_index])));
+        tpool.submit(&waiter, boost::bind(&Blockchain::check_ring_signature, this, std::cref(tx_prefix_hash), std::cref(in_to_key.k_image), std::cref(pubkeys[sig_index]), std::cref(tx.signatures[sig_index]), std::ref(results[sig_index])));
       }
       else
       {
@@ -2590,7 +2590,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     sig_index++;
   }
   if (tx.version == 1 && threads > 1)
-    tpool.wait(&wobj);
+    waiter.wait();
 
   if (tx.version == 1)
   {
@@ -3578,7 +3578,7 @@ bool Blockchain::cleanup_handle_incoming_blocks(bool force_sync)
       {
         m_sync_counter = 0;
         tools::threadpool& tpool = tools::threadpool::getInstance();
-        tpool.submit(NULL, boost::bind(&Blockchain::store_blockchain, this));
+        tpool.submit(&m_poolwaiter, boost::bind(&Blockchain::store_blockchain, this));
       }
       else if(m_db_sync_mode == db_sync)
       {
@@ -3666,7 +3666,8 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::list<block_complete_e
     return true;
 
   bool blocks_exist = false;
-  uint64_t threads = tools::get_max_concurrency();
+  tools::threadpool& tpool = tools::threadpool::getInstance();
+  uint64_t threads = tpool.get_max_concurrency();
 
   if (blocks_entry.size() > 1 && threads > 1 && m_max_prepare_blocks_threads > 1)
   {
@@ -3739,15 +3740,14 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::list<block_complete_e
     {
       m_blocks_longhash_table.clear();
       uint64_t thread_height = height;
-      tools::threadpool& tpool = tools::threadpool::getInstance();
-      tools::threadpool::waitobj wobj;
+      tools::threadpool::waiter waiter;
       for (uint64_t i = 0; i < threads; i++)
       {
-        tpool.submit(&wobj, boost::bind(&Blockchain::block_longhash_worker, this, thread_height, std::cref(blocks[i]), std::ref(maps[i])));
+        tpool.submit(&waiter, boost::bind(&Blockchain::block_longhash_worker, this, thread_height, std::cref(blocks[i]), std::ref(maps[i])));
         thread_height += blocks[i].size();
       }
 
-      tpool.wait(&wobj);
+      waiter.wait();
 
       if (m_cancel)
          return false;
@@ -3871,21 +3871,20 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::list<block_complete_e
   // [output] stores all transactions for each tx_out_index::hash found
   std::vector<std::unordered_map<crypto::hash, cryptonote::transaction>> transactions(amounts.size());
 
-  threads = tools::get_max_concurrency();
+  threads = tpool.get_max_concurrency();
   if (!m_db->can_thread_bulk_indices())
     threads = 1;
 
   if (threads > 1)
   {
-    tools::threadpool& tpool = tools::threadpool::getInstance();
-    tools::threadpool::waitobj wobj;
+    tools::threadpool::waiter waiter;
 
     for (size_t i = 0; i < amounts.size(); i++)
     {
       uint64_t amount = amounts[i];
-      tpool.submit(&wobj, boost::bind(&Blockchain::output_scan_worker, this, amount, std::cref(offset_map[amount]), std::ref(tx_map[amount]), std::ref(transactions[i])));
+      tpool.submit(&waiter, boost::bind(&Blockchain::output_scan_worker, this, amount, std::cref(offset_map[amount]), std::ref(tx_map[amount]), std::ref(transactions[i])));
     }
-    tpool.wait(&wobj);
+    waiter.wait();
   }
   else
   {

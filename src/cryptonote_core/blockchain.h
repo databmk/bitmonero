@@ -45,6 +45,7 @@
 #include "string_tools.h"
 #include "cryptonote_basic/cryptonote_basic.h"
 #include "common/util.h"
+#include "common/threadpool.h"
 #include "cryptonote_protocol/cryptonote_protocol_defs.h"
 #include "rpc/core_rpc_server_commands_defs.h"
 #include "cryptonote_basic/difficulty.h"
@@ -947,6 +948,8 @@ namespace cryptonote
     std::vector<uint64_t> m_timestamps;
     std::vector<difficulty_type> m_difficulties;
     uint64_t m_timestamps_and_difficulties_height;
+
+    tools::threadpool::waiter m_poolwaiter;
 
     // all alternative chains
     blocks_ext_by_hash m_alternative_chains; // crypto::hash -> block_extended_info
