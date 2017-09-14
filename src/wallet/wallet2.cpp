@@ -45,6 +45,7 @@ using namespace epee;
 #include "cryptonote_basic/cryptonote_basic_impl.h"
 #include "common/boost_serialization_helper.h"
 #include "common/command_line.h"
+#include "common/threadpool.h"
 #include "profile_tools.h"
 #include "crypto/crypto.h"
 #include "serialization/binary_utils.h"
@@ -88,14 +89,6 @@ using namespace cryptonote;
 #define FEE_ESTIMATE_GRACE_BLOCKS 10 // estimate fee valid for that many blocks
 
 #define SECOND_OUTPUT_RELATEDNESS_THRESHOLD 0.0f
-
-#define KILL_IOSERVICE()  \
-    do { \
-      work.reset(); \
-      while (!ioservice.stopped()) ioservice.poll(); \
-      threadpool.join_all(); \
-      ioservice.stop(); \
-    } while(0)
 
 #define KEY_IMAGE_EXPORT_FILE_MAGIC "Monero key image export\002"
 
@@ -720,13 +713,9 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
           ++num_vouts_received;
 
           // process the other outs from that tx
-          boost::asio::io_service ioservice;
-          boost::thread_group threadpool;
-          std::unique_ptr < boost::asio::io_service::work > work(new boost::asio::io_service::work(ioservice));
-          for (int i = 0; i < threads; i++)
-          {
-            threadpool.create_thread(boost::bind(&boost::asio::io_service::run, &ioservice));
-          }
+          tools::threadpool& tpool = tools::threadpool::getInstance();
+          tools::threadpool::waitobj wobj;
+          wobj.num = 0;
 
           std::vector<uint64_t> money_transfered(tx.vout.size());
           std::deque<bool> error(tx.vout.size());
@@ -734,10 +723,10 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
           // the first one was already checked
           for (size_t i = 1; i < tx.vout.size(); ++i)
           {
-            ioservice.dispatch(boost::bind(&wallet2::check_acc_out_precomp, this, std::cref(keys.m_account_address.m_spend_public_key), std::cref(tx.vout[i]), std::cref(derivation), i,
+            tpool.submit(&wobj, boost::bind(&wallet2::check_acc_out_precomp, this, std::cref(keys.m_account_address.m_spend_public_key), std::cref(tx.vout[i]), std::cref(derivation), i,
               std::ref(received[i]), std::ref(money_transfered[i]), std::ref(error[i])));
           }
-          KILL_IOSERVICE();
+          tpool.wait(&wobj);
           for (size_t i = 1; i < tx.vout.size(); ++i)
           {
             if (error[i])
@@ -766,23 +755,19 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
     }
     else if (tx.vout.size() > 1 && threads > 1)
     {
-      boost::asio::io_service ioservice;
-      boost::thread_group threadpool;
-      std::unique_ptr < boost::asio::io_service::work > work(new boost::asio::io_service::work(ioservice));
-      for (int i = 0; i < threads; i++)
-      {
-        threadpool.create_thread(boost::bind(&boost::asio::io_service::run, &ioservice));
-      }
+      tools::threadpool& tpool = tools::threadpool::getInstance();
+      tools::threadpool::waitobj wobj;
+      wobj.num = 0;
 
       std::vector<uint64_t> money_transfered(tx.vout.size());
       std::deque<bool> error(tx.vout.size());
       std::deque<bool> received(tx.vout.size());
       for (size_t i = 0; i < tx.vout.size(); ++i)
       {
-        ioservice.dispatch(boost::bind(&wallet2::check_acc_out_precomp, this, std::cref(keys.m_account_address.m_spend_public_key), std::cref(tx.vout[i]), std::cref(derivation), i,
+        tpool.submit(&wobj, boost::bind(&wallet2::check_acc_out_precomp, this, std::cref(keys.m_account_address.m_spend_public_key), std::cref(tx.vout[i]), std::cref(derivation), i,
           std::ref(received[i]), std::ref(money_transfered[i]), std::ref(error[i])));
       }
-      KILL_IOSERVICE();
+      tpool.wait(&wobj);
       tx_money_got_in_outs = 0;
       for (size_t i = 0; i < tx.vout.size(); ++i)
       {
@@ -1263,22 +1248,18 @@ void wallet2::process_blocks(uint64_t start_height, const std::list<cryptonote::
     {
       size_t round_size = std::min((size_t)threads, blocks_size - b);
 
-      boost::asio::io_service ioservice;
-      boost::thread_group threadpool;
-      std::unique_ptr < boost::asio::io_service::work > work(new boost::asio::io_service::work(ioservice));
-      for (size_t i = 0; i < round_size; i++)
-      {
-        threadpool.create_thread(boost::bind(&boost::asio::io_service::run, &ioservice));
-      }
+      tools::threadpool& tpool = tools::threadpool::getInstance();
+      tools::threadpool::waitobj wobj;
+      wobj.num = 0;
 
       std::list<block_complete_entry>::const_iterator tmpblocki = blocki;
       for (size_t i = 0; i < round_size; ++i)
       {
-        ioservice.dispatch(boost::bind(&wallet2::parse_block_round, this, std::cref(tmpblocki->block),
+        tpool.submit(&wobj, boost::bind(&wallet2::parse_block_round, this, std::cref(tmpblocki->block),
           std::ref(round_blocks[i]), std::ref(round_block_hashes[i]), std::ref(error[i])));
         ++tmpblocki;
       }
-      KILL_IOSERVICE();
+      tpool.wait(&wobj);
       tmpblocki = blocki;
       for (size_t i = 0; i < round_size; ++i)
       {
@@ -1698,7 +1679,9 @@ void wallet2::refresh(uint64_t start_height, uint64_t & blocks_fetched, bool& re
   size_t try_count = 0;
   crypto::hash last_tx_hash_id = m_transfers.size() ? m_transfers.back().m_txid : null_hash;
   std::list<crypto::hash> short_chain_history;
-  boost::thread pull_thread;
+  tools::threadpool& tpool = tools::threadpool::getInstance();
+  tools::threadpool::waitobj wobj;
+  wobj.num = 0;
   uint64_t blocks_start_height;
   std::list<cryptonote::block_complete_entry> blocks;
   std::vector<COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> o_indices;
@@ -1736,11 +1719,11 @@ void wallet2::refresh(uint64_t start_height, uint64_t & blocks_fetched, bool& re
       std::list<cryptonote::block_complete_entry> next_blocks;
       std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> next_o_indices;
       bool error = false;
-      pull_thread = boost::thread([&]{pull_next_blocks(start_height, next_blocks_start_height, short_chain_history, blocks, next_blocks, next_o_indices, error);});
+      tpool.submit(&wobj, [&]{pull_next_blocks(start_height, next_blocks_start_height, short_chain_history, blocks, next_blocks, next_o_indices, error);});
 
       process_blocks(blocks_start_height, blocks, o_indices, added_blocks);
       blocks_fetched += added_blocks;
-      pull_thread.join();
+      tpool.wait(&wobj);
       if(blocks_start_height == next_blocks_start_height)
       {
         m_node_rpc_proxy.set_height(m_blockchain.size());
@@ -1762,8 +1745,6 @@ void wallet2::refresh(uint64_t start_height, uint64_t & blocks_fetched, bool& re
     catch (const std::exception&)
     {
       blocks_fetched += added_blocks;
-      if (pull_thread.joinable())
-        pull_thread.join();
       if(try_count < 3)
       {
         LOG_PRINT_L1("Another try pull_blocks (try_count=" << try_count << ")...");

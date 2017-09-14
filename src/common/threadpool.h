@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2017, The Monero Project
+// Copyright (c) 2017, The Monero Project
 //
 // All rights reserved.
 //
@@ -25,16 +25,59 @@
 // INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
 // STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// 
-// Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
-
 #pragma once
+
+#include <boost/thread/condition_variable.hpp>
+#include <boost/thread/mutex.hpp>
+#include <boost/thread/thread.hpp>
+#include <cstddef>
+#include <functional>
+#include <utility>
+#include <vector>
 
 namespace tools
 {
-  class DNSResolver;
-  struct login;
-  class password_container;
-  class t_http_connection;
-  class threadpool;
+//! A global thread pool
+class threadpool
+{
+public:
+  static threadpool& getInstance() {
+    static threadpool instance;
+    return instance;
+  }
+
+  // The waitobj lets the caller know when all of its
+  // tasks are completed. The caller must initialize num
+  // to zero before using it.
+  typedef struct waitobj {
+    boost::mutex mt;
+    boost::condition_variable cv;
+    int num;
+  } waitobj;
+
+  // Submit a task to the pool. The obj pointer may be
+  // NULL if the caller doesn't care to wait for the
+  // task to finish.
+  void submit(waitobj *obj, std::function<void()> f);
+
+  // Wait for a set of tasks to finish.
+  void wait(waitobj *obj);
+
+  private:
+    threadpool();
+    ~threadpool();
+    typedef struct entry {
+      waitobj *wo;
+      std::function<void()> f;
+    } entry;
+    std::deque<entry> queue;
+    boost::condition_variable has_work;
+    boost::mutex mutex;
+    std::vector<boost::thread *> threads;
+    int active;
+    int max;
+    bool running;
+    void run();
+};
+
 }

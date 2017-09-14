@@ -948,10 +948,6 @@ namespace cryptonote
     std::vector<difficulty_type> m_difficulties;
     uint64_t m_timestamps_and_difficulties_height;
 
-    boost::asio::io_service m_async_service;
-    boost::thread_group m_async_pool;
-    std::unique_ptr<boost::asio::io_service::work> m_async_work_idle;
-
     // all alternative chains
     blocks_ext_by_hash m_alternative_chains; // crypto::hash -> block_extended_info
 

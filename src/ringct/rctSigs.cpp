@@ -30,8 +30,7 @@
 
 #include "misc_log_ex.h"
 #include "common/perf_timer.h"
-#include "common/task_region.h"
-#include "common/thread_group.h"
+#include "common/threadpool.h"
 #include "common/util.h"
 #include "rctSigs.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
@@ -731,17 +730,17 @@ namespace rct {
         try
         {
           if (semantics) {
+            tools::threadpool& tpool = tools::threadpool::getInstance();
+            tools::threadpool::waitobj wobj;
+            wobj.num = 0;
             std::deque<bool> results(rv.outPk.size(), false);
-            tools::thread_group threadpool(tools::thread_group::optimal_with_max(rv.outPk.size()));
-
-            tools::task_region(threadpool, [&] (tools::task_region_handle& region) {
-              DP("range proofs verified?");
-              for (size_t i = 0; i < rv.outPk.size(); i++) {
-                region.run([&, i] {
-                  results[i] = verRange(rv.outPk[i].mask, rv.p.rangeSigs[i]);
-                });
-              }
-            });
+            DP("range proofs verified?");
+            for (size_t i = 0; i < rv.outPk.size(); i++) {
+              tpool.submit(&wobj, [&, i] {
+                results[i] = verRange(rv.outPk[i].mask, rv.p.rangeSigs[i]);
+              });
+            }
+            tpool.wait(&wobj);
 
             for (size_t i = 0; i < rv.outPk.size(); ++i) {
               if (!results[i]) {
@@ -794,7 +793,9 @@ namespace rct {
         const size_t threads = std::max(rv.outPk.size(), rv.mixRing.size());
 
         std::deque<bool> results(threads);
-        tools::thread_group threadpool(tools::thread_group::optimal_with_max(threads));
+        tools::threadpool& tpool = tools::threadpool::getInstance();
+        tools::threadpool::waitobj wobj;
+        wobj.num = 0;
 
         if (semantics) {
           key sumOutpks = identity();
@@ -819,13 +820,12 @@ namespace rct {
 
           results.clear();
           results.resize(rv.outPk.size());
-          tools::task_region(threadpool, [&] (tools::task_region_handle& region) {
-            for (size_t i = 0; i < rv.outPk.size(); i++) {
-              region.run([&, i] {
-                  results[i] = verRange(rv.outPk[i].mask, rv.p.rangeSigs[i]);
-              });
-            }
-          });
+          for (size_t i = 0; i < rv.outPk.size(); i++) {
+            tpool.submit(&wobj, [&, i] {
+              results[i] = verRange(rv.outPk[i].mask, rv.p.rangeSigs[i]);
+            });
+          }
+          tpool.wait(&wobj);
 
           for (size_t i = 0; i < results.size(); ++i) {
             if (!results[i]) {
@@ -839,13 +839,12 @@ namespace rct {
 
           results.clear();
           results.resize(rv.mixRing.size());
-          tools::task_region(threadpool, [&] (tools::task_region_handle& region) {
-            for (size_t i = 0 ; i < rv.mixRing.size() ; i++) {
-              region.run([&, i] {
+          for (size_t i = 0 ; i < rv.mixRing.size() ; i++) {
+            tpool.submit(&wobj, [&, i] {
                 results[i] = verRctMGSimple(message, rv.p.MGs[i], rv.mixRing[i], rv.pseudoOuts[i]);
-              });
-            }
-          });
+            });
+          }
+          tpool.wait(&wobj);
 
           for (size_t i = 0; i < results.size(); ++i) {
             if (!results[i]) {

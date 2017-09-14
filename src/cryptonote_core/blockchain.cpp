@@ -45,6 +45,7 @@
 #include "profile_tools.h"
 #include "file_io_utils.h"
 #include "common/int-util.h"
+#include "common/threadpool.h"
 #include "common/boost_serialization_helper.h"
 #include "warnings.h"
 #include "crypto/hash.h"
@@ -374,12 +375,6 @@ bool Blockchain::init(BlockchainDB* db, const bool testnet, const cryptonote::te
   if(!top_block_timestamp)
     timestamp_diff = time(NULL) - 1341378000;
 
-  // create general purpose async service queue
-
-  m_async_work_idle = std::unique_ptr < boost::asio::io_service::work > (new boost::asio::io_service::work(m_async_service));
-  // we only need 1
-  m_async_pool.create_thread(boost::bind(&boost::asio::io_service::run, &m_async_service));
-
 #if defined(PER_BLOCK_CHECKPOINT)
   if (!fakechain)
     load_compiled_in_block_hashes();
@@ -437,11 +432,6 @@ bool Blockchain::deinit()
   LOG_PRINT_L3("Blockchain::" << __func__);
 
   MTRACE("Stopping blockchain read/write activity");
-
- // stop async service
-  m_async_work_idle.reset();
-  m_async_pool.join_all();
-  m_async_service.stop();
 
   // as this should be called if handling a SIGSEGV, need to check
   // if m_db is a NULL pointer (and thus may have caused the illegal
@@ -2514,32 +2504,9 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
   results.resize(tx.vin.size(), 0);
 
   int threads = tools::get_max_concurrency();
-
-  boost::asio::io_service ioservice;
-  boost::thread_group threadpool;
-  bool ioservice_active = false;
-
-  std::unique_ptr < boost::asio::io_service::work > work(new boost::asio::io_service::work(ioservice));
-  if(threads > 1)
-  {
-    for (int i = 0; i < threads; i++)
-    {
-      threadpool.create_thread(boost::bind(&boost::asio::io_service::run, &ioservice));
-    }
-    ioservice_active = true;
-  }
-
-#define KILL_IOSERVICE()  \
-        if(ioservice_active) \
-        { \
-            work.reset(); \
-            while (!ioservice.stopped()) ioservice.poll(); \
-            threadpool.join_all(); \
-            ioservice.stop(); \
-            ioservice_active = false; \
-        }
-
-  epee::misc_utils::auto_scope_leave_caller ioservice_killer = epee::misc_utils::create_scope_leave_handler([&]() { KILL_IOSERVICE(); });
+  tools::threadpool& tpool = tools::threadpool::getInstance();
+  tools::threadpool::waitobj wobj;
+  wobj.num = 0;
 
   for (const auto& txin : tx.vin)
   {
@@ -2600,7 +2567,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
       {
         // ND: Speedup
         // 1. Thread ring signature verification if possible.
-        ioservice.dispatch(boost::bind(&Blockchain::check_ring_signature, this, std::cref(tx_prefix_hash), std::cref(in_to_key.k_image), std::cref(pubkeys[sig_index]), std::cref(tx.signatures[sig_index]), std::ref(results[sig_index])));
+        tpool.submit(&wobj, boost::bind(&Blockchain::check_ring_signature, this, std::cref(tx_prefix_hash), std::cref(in_to_key.k_image), std::cref(pubkeys[sig_index]), std::cref(tx.signatures[sig_index]), std::ref(results[sig_index])));
       }
       else
       {
@@ -2623,8 +2590,8 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
 
     sig_index++;
   }
-
-  KILL_IOSERVICE();
+  if (tx.version == 1 && threads > 1)
+    tpool.wait(&wobj);
 
   if (tx.version == 1)
   {
@@ -3611,7 +3578,8 @@ bool Blockchain::cleanup_handle_incoming_blocks(bool force_sync)
       if(m_db_sync_mode == db_async)
       {
         m_sync_counter = 0;
-        m_async_service.dispatch(boost::bind(&Blockchain::store_blockchain, this));
+        tools::threadpool& tpool = tools::threadpool::getInstance();
+        tpool.submit(NULL, boost::bind(&Blockchain::store_blockchain, this));
       }
       else if(m_db_sync_mode == db_sync)
       {
@@ -3708,15 +3676,12 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::list<block_complete_e
       threads = m_max_prepare_blocks_threads;
 
     uint64_t height = m_db->height();
-    std::vector<boost::thread *> thread_list;
     int batches = blocks_entry.size() / threads;
     int extra = blocks_entry.size() % threads;
     MDEBUG("block_batches: " << batches);
     std::vector<std::unordered_map<crypto::hash, crypto::hash>> maps(threads);
     std::vector < std::vector < block >> blocks(threads);
     auto it = blocks_entry.begin();
-    boost::thread::attributes attrs;
-    attrs.set_stack_size(THREAD_STACK_SIZE);
 
     for (uint64_t i = 0; i < threads; i++)
     {
@@ -3775,19 +3740,16 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::list<block_complete_e
     {
       m_blocks_longhash_table.clear();
       uint64_t thread_height = height;
+      tools::threadpool& tpool = tools::threadpool::getInstance();
+      tools::threadpool::waitobj wobj;
+      wobj.num = 0;
       for (uint64_t i = 0; i < threads; i++)
       {
-        thread_list.push_back(new boost::thread(attrs, boost::bind(&Blockchain::block_longhash_worker, this, thread_height, std::cref(blocks[i]), std::ref(maps[i]))));
+        tpool.submit(&wobj, boost::bind(&Blockchain::block_longhash_worker, this, thread_height, std::cref(blocks[i]), std::ref(maps[i])));
         thread_height += blocks[i].size();
       }
 
-      for (size_t j = 0; j < thread_list.size(); j++)
-      {
-        thread_list[j]->join();
-        delete thread_list[j];
-      }
-
-      thread_list.clear();
+      tpool.wait(&wobj);
 
       if (m_cancel)
          return false;
@@ -3917,24 +3879,16 @@ bool Blockchain::prepare_handle_incoming_blocks(const std::list<block_complete_e
 
   if (threads > 1)
   {
-    boost::asio::io_service ioservice;
-    boost::thread_group threadpool;
-    std::unique_ptr < boost::asio::io_service::work > work(new boost::asio::io_service::work(ioservice));
-
-    for (uint64_t i = 0; i < threads; i++)
-    {
-      threadpool.create_thread(boost::bind(&boost::asio::io_service::run, &ioservice));
-    }
+    tools::threadpool& tpool = tools::threadpool::getInstance();
+    tools::threadpool::waitobj wobj;
+    wobj.num = 0;
 
     for (size_t i = 0; i < amounts.size(); i++)
     {
       uint64_t amount = amounts[i];
-      ioservice.dispatch(boost::bind(&Blockchain::output_scan_worker, this, amount, std::cref(offset_map[amount]), std::ref(tx_map[amount]), std::ref(transactions[i])));
+      tpool.submit(&wobj, boost::bind(&Blockchain::output_scan_worker, this, amount, std::cref(offset_map[amount]), std::ref(tx_map[amount]), std::ref(transactions[i])));
     }
-
-    work.reset();
-    threadpool.join_all();
-    ioservice.stop();
+    tpool.wait(&wobj);
   }
   else
   {
