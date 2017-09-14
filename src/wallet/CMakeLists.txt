@@ -84,7 +84,6 @@ target_link_libraries(wallet
     ${Boost_REGEX_LIBRARY}
   PRIVATE
     ${EXTRA_LIBRARIES})
-add_dependencies(wallet version)
 
 if (NOT BUILD_GUI_DEPS)
   set(wallet_rpc_sources
@@ -117,7 +116,6 @@ if (NOT BUILD_GUI_DEPS)
       ${Boost_THREAD_LIBRARY}
       ${CMAKE_THREAD_LIBS_INIT}
       ${EXTRA_LIBRARIES})
-  add_dependencies(wallet_rpc_server version)
   set_property(TARGET wallet_rpc_server
     PROPERTY
       OUTPUT_NAME "monero-wallet-rpc")

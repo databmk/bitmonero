@@ -103,7 +103,6 @@ target_link_libraries(daemon
     ${CMAKE_THREAD_LIBS_INIT}
     ${ZMQ_LIB}
     ${EXTRA_LIBRARIES})
-add_dependencies(daemon version)
 set_property(TARGET daemon
   PROPERTY
     OUTPUT_NAME "monerod")
